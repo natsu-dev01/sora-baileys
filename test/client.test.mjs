@@ -128,6 +128,38 @@ test('un restartRequested reconecta con un socket nuevo', async () => {
   await client.stop()
 })
 
+test('un cierre restart required no se loguea como error', async () => {
+  const logs = []
+  const logger = {
+    debug() {},
+    info(message) { logs.push(['info', message]) },
+    warn() {},
+    error(message) { logs.push(['error', message]) },
+  }
+  const adapter = new MockAdapter({ connectDelayMs: 5, qrOnFresh: false })
+  adapter.markLinked()
+  const client = new BaileysClient({
+    ...fastOptions,
+    adapter,
+    logger,
+    sessionDir: 'linked-restart-close-test',
+  })
+
+  const firstConnected = client.waitForEvent('connected')
+  await client.start()
+  await firstConnected
+
+  const secondConnected = client.waitForEvent('connected', 2000)
+  adapter.drop('restart')
+  await secondConnected
+
+  assert.equal(logs.filter(([level]) => level === 'error').length, 0)
+  assert.ok(logs.some(([level, message]) =>
+    level === 'info' && message === 'connection closed for restart'))
+
+  await client.stop()
+})
+
 test('envía botones de respuesta rápida y emite el button reply', async () => {
   const adapter = new MockAdapter({ connectDelayMs: 5, qrOnFresh: false })
   adapter.markLinked()

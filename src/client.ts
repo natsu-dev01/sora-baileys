@@ -823,7 +823,7 @@ export class BaileysClient {
     if (gen !== this.generation || this.stopped) return
     this.generation += 1
     this.clearConnectionTimers()
-    this.lastError(payload.error)
+    this.lastError(payload.error, payload.reason)
 
     const socket = this.socket
     this.socket = undefined
@@ -997,9 +997,14 @@ export class BaileysClient {
     this.events.emit('state', { previous, current: next, attempt: this.attempt })
   }
 
-  private lastError(error: unknown): void {
+  private lastError(error: unknown, reason?: CloseReason): void {
     this.stats.lastError = error
-    if (error !== undefined) this.logger.error('connection error', error)
+    if (error === undefined) return
+    if (reason === 'restart' || reason === 'manual') {
+      this.logger.info('connection closed for restart', error)
+      return
+    }
+    this.logger.error('connection error', error)
   }
 
   private scheduleTimer(ms: number, callback: () => void): void {
