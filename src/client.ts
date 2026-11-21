@@ -1,5 +1,6 @@
 import { BaileysAdapter } from './adapters/baileys-adapter.js'
 import { backoffDelay } from './core/backoff.js'
+import { normalizeButtons as normalizeAdvancedButtons } from './core/interactive.js'
 import { Emitter } from './core/emitter.js'
 import { createLogger } from './core/logger.js'
 import { toMillis } from './core/time.js'
@@ -8,6 +9,7 @@ import { RetryQueue } from './core/queue.js'
 import { resolveSending, SendLimiter } from './core/sender.js'
 import type { ResolvedSending } from './core/sender.js'
 import type {
+  AdvancedInteractiveOptions,
   AuthSession,
   ButtonMessageOptions,
   ButtonReply,
@@ -20,6 +22,7 @@ import type {
   CloseReason,
   InteractiveButton,
   ConnectionState,
+  ListMessageContent,
   LiveSocket,
   MessageKey,
   MessageStore,
@@ -27,10 +30,13 @@ import type {
   OutboundKind,
   OutboundMessage,
   QuickReplyButton,
+  RawInteractiveOptions,
   RetryCache,
   SocketAdapter,
   SocketAdapterEvents,
+  TemplateButtonsContent,
 } from './types.js'
+import type { ButtonInput, CarouselCardInput } from './core/interactive.js'
 
 interface ResolvedOptions {
   sessionDir: string
@@ -246,10 +252,10 @@ export class BaileysClient {
   async sendButtons(
     to: string,
     text: string,
-    buttons: QuickReplyButton[],
+    buttons: ButtonInput[],
     options: ButtonMessageOptions = {},
   ): Promise<{ id: string; queued: boolean }> {
-    const normalized = normalizeButtons(buttons)
+    const normalized = this.normalizeOutboundButtons(buttons, options)
     const id = typeof options.metadata?.id === 'string' ? options.metadata.id : `local-${++messageSequence}`
     const payload: OutboundMessage = {
       to,
@@ -285,10 +291,10 @@ export class BaileysClient {
   async sendInteractive(
     to: string,
     text: string,
-    buttons: InteractiveButton[],
+    buttons: ButtonInput[],
     options: ButtonMessageOptions = {},
   ): Promise<{ id: string; queued: boolean }> {
-    const normalized = normalizeInteractiveButtons(buttons)
+    const normalized = this.normalizeOutboundInteractiveButtons(buttons, options)
     const id = typeof options.metadata?.id === 'string' ? options.metadata.id : `local-${++messageSequence}`
     const payload: OutboundMessage = {
       to,
@@ -323,7 +329,7 @@ export class BaileysClient {
   /** Tarjetas en carrusel con texto y botones por tarjeta. */
   async sendCarousel(
     to: string,
-    cards: CarouselCard[],
+    cards: Array<CarouselCard | CarouselCardInput>,
     options: CarouselOptions = {},
   ): Promise<{ id: string; queued: boolean }> {
     const normalized = normalizeCards(cards)
@@ -356,6 +362,145 @@ export class BaileysClient {
     const queuedId = this.queue.enqueue(payload, id)
     this.events.emit('queued', { id: queuedId, size: this.queue.size })
     return { id: queuedId, queued: true }
+  }
+
+  /** Lista clásica (`listMessage`) con secciones y filas. */
+  sendListMessage(
+    to: string,
+    content: ListMessageContent,
+    options: RawInteractiveOptions = {},
+  ): Promise<{ id: string; queued: boolean }> {
+    if (!Array.isArray(content.sections) || content.sections.length === 0) {
+      return Promise.reject(new Error('sendListMessage requiere al menos una sección'))
+    }
+    const id = pickId(content.metadata?.id) ?? pickId(options.metadata?.id) ?? `local-${++messageSequence}`
+    return this.sendPayload({
+      to,
+      text: content.text ?? '',
+      id,
+      kind: 'list',
+      metadata: { ...content.metadata, ...options.metadata, id },
+      advanced: {
+        content: { ...content } as Record<string, unknown>,
+        options: {
+          quoted: content.quoted ?? options.quoted,
+          mdPatch: options.mdPatch,
+          metadata: { ...content.metadata, ...options.metadata, id },
+        },
+      },
+    }, 'sendListMessage')
+  }
+
+  /** Alias de `sendListMessage`. */
+  sendList(
+    to: string,
+    content: ListMessageContent,
+    options: RawInteractiveOptions = {},
+  ): Promise<{ id: string; queued: boolean }> {
+    return this.sendListMessage(to, content, options)
+  }
+
+  /** Botones en formato heredado `buttonsMessage` (máximo 3). */
+  sendTemplateButtons(
+    to: string,
+    content: TemplateButtonsContent,
+    options: RawInteractiveOptions = {},
+  ): Promise<{ id: string; queued: boolean }> {
+    const buttons = content.buttons ?? []
+    if (!Array.isArray(buttons) || buttons.length === 0) {
+      return Promise.reject(new Error('sendTemplateButtons requiere al menos un botón'))
+    }
+    const id = pickId(content.metadata?.id) ?? pickId(options.metadata?.id) ?? `local-${++messageSequence}`
+    return this.sendPayload({
+      to,
+      text: content.text ?? '',
+      id,
+      kind: 'template',
+      metadata: { ...content.metadata, ...options.metadata, id },
+      advanced: {
+        content: { ...content } as Record<string, unknown>,
+        options: {
+          quoted: content.quoted ?? options.quoted,
+          mdPatch: options.mdPatch,
+          metadata: { ...content.metadata, ...options.metadata, id },
+        },
+      },
+    }, 'sendTemplateButtons')
+  }
+
+  /** Contenido interactivo nativo avanzado (galaxy_message, flows, catálogos…). */
+  sendInteractiveMessage(
+    to: string,
+    content: Record<string, unknown>,
+    options: RawInteractiveOptions = {},
+  ): Promise<{ id: string; queued: boolean }> {
+    const id = pickId(options.metadata?.id) ?? `local-${++messageSequence}`
+    return this.sendPayload({
+      to,
+      text: typeof content.text === 'string' ? content.text : '',
+      id,
+      kind: 'raw',
+      metadata: { ...options.metadata, id },
+      advanced: {
+        content,
+        options: {
+          quoted: options.quoted,
+          mdPatch: options.mdPatch,
+          additionalNodes: options.additionalNodes,
+          metadata: { ...options.metadata, id },
+        },
+      },
+    }, 'sendInteractiveMessage')
+  }
+
+  /** Envía un payload avanzado por el mismo pipeline de ritmo, cola y stats. */
+  private async sendPayload(
+    payload: OutboundMessage,
+    where: string,
+  ): Promise<{ id: string; queued: boolean }> {
+    const socket = this.socket
+    if (this.state === 'connected' && socket && supportsKind(socket, payload.kind ?? 'text')) {
+      try {
+        const result = await this.dispatchOutbound(socket, payload)
+        this.stats.messagesSent += 1
+        this.events.emit('sent', { id: result.id, to: payload.to, kind: payload.kind })
+        return { id: result.id, queued: false }
+      } catch (error) {
+        if (isDailyLimitError(error)) throw error
+        this.stats.messagesFailed += 1
+        this.stats.lastError = error
+        this.events.emit('error', { where, error })
+      }
+    }
+
+    const queuedId = this.queue.enqueue(payload, payload.id)
+    this.events.emit('queued', { id: queuedId, size: this.queue.size })
+    return { id: queuedId, queued: true }
+  }
+
+  /** Acepta botones clásicos y formas avanzadas sin romper la validación previa. */
+  private normalizeOutboundButtons(buttons: ButtonInput[], options: ButtonMessageOptions): ButtonInput[] {
+    if (!Array.isArray(buttons) || buttons.length === 0) {
+      throw new Error('sendButtons requiere al menos un botón')
+    }
+    const advancedFields = options.multiple || options.image || options.video || options.maxButtons !== undefined
+    if (!advancedFields && buttons.every(isLegacyQuickReply)) {
+      return normalizeButtons(buttons as QuickReplyButton[])
+    }
+    normalizeAdvancedButtons(buttons, { multiple: options.multiple, max: options.maxButtons })
+    return buttons
+  }
+
+  private normalizeOutboundInteractiveButtons(buttons: ButtonInput[], options: ButtonMessageOptions): ButtonInput[] {
+    if (!Array.isArray(buttons) || buttons.length === 0) {
+      throw new Error('sendInteractive requiere al menos un botón')
+    }
+    const advancedFields = options.multiple || options.image || options.video || options.maxButtons !== undefined
+    if (!advancedFields && buttons.every(isLegacyInteractiveButton)) {
+      return normalizeInteractiveButtons(buttons as InteractiveButton[])
+    }
+    normalizeAdvancedButtons(buttons, { multiple: options.multiple, max: options.maxButtons })
+    return buttons
   }
 
   private async dispatchOutbound(
@@ -429,6 +574,34 @@ export class BaileysClient {
           metadata,
         })
         return { id: carouselResult.id, kind: 'carousel' }
+      case 'list': {
+        if (!socket.sendListMessage) throw new Error('adapter does not support list messages')
+        const content = payload.advanced?.content ?? {}
+        const result = await socket.sendListMessage(payload.to, content as ListMessageContent, {
+          ...payload.advanced?.options,
+          metadata,
+        } as AdvancedInteractiveOptions)
+        return { id: result.id, kind: 'list' }
+      }
+      case 'template': {
+        if (!socket.sendTemplateButtons) throw new Error('adapter does not support template buttons')
+        const content = payload.advanced?.content ?? {}
+        const result = await socket.sendTemplateButtons(payload.to, content as TemplateButtonsContent, {
+          ...payload.advanced?.options,
+          metadata,
+        } as AdvancedInteractiveOptions)
+        return { id: result.id, kind: 'template' }
+      }
+      case 'raw': {
+        if (!socket.sendInteractiveMessage) throw new Error('adapter does not support interactive messages')
+        const content = payload.advanced?.content ?? {}
+        const options = payload.advanced?.options ?? {}
+        const result = await socket.sendInteractiveMessage(payload.to, content, {
+          ...options,
+          metadata,
+        } as RawInteractiveOptions)
+        return { id: result.id, kind: 'raw' }
+      }
       default: {
         const result = await socket.sendText(payload.to, payload.text, metadata)
         return { id: result.id, kind: 'text' }
@@ -812,6 +985,43 @@ function isDailyLimitError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as { code?: string }).code === 'DAILY_LIMIT'
 }
 
+function pickId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function supportsKind(socket: LiveSocket, kind: OutboundKind): boolean {
+  switch (kind) {
+    case 'buttons': return Boolean(socket.sendButtons)
+    case 'interactive': return Boolean(socket.sendInteractive)
+    case 'carousel': return Boolean(socket.sendCarousel)
+    case 'list': return Boolean(socket.sendListMessage)
+    case 'template': return Boolean(socket.sendTemplateButtons)
+    case 'raw': return Boolean(socket.sendInteractiveMessage)
+    default: return true
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object'
+}
+
+function isLegacyQuickReply(value: unknown): value is QuickReplyButton {
+  if (!isRecord(value)) return false
+  if (typeof value.id !== 'string' || typeof value.label !== 'string') return false
+  return !('text' in value) && !('body' in value) && !('url' in value) && !('copy' in value)
+    && !('phone' in value) && !('call' in value) && !('list' in value) && !('sections' in value)
+    && !('name' in value) && !('buttonParamsJson' in value)
+}
+
+function isLegacyInteractiveButton(value: unknown): value is InteractiveButton {
+  if (!isRecord(value)) return false
+  if (typeof value.label !== 'string') return false
+  if (!('id' in value) && !('url' in value) && !('phoneNumber' in value)) return false
+  return !('text' in value) && !('name' in value) && !('buttonParamsJson' in value)
+    && !('copy' in value) && !('phone' in value) && !('call' in value)
+    && !('list' in value) && !('sections' in value)
+}
+
 function normalizeButtons(buttons: QuickReplyButton[]): QuickReplyButton[] {
   if (!Array.isArray(buttons) || buttons.length === 0) {
     throw new Error('sendButtons requiere al menos un botón')
@@ -850,7 +1060,7 @@ function normalizeInteractiveButtons(buttons: InteractiveButton[]): InteractiveB
   })
 }
 
-function normalizeCards(cards: CarouselCard[]): CarouselCard[] {
+function normalizeCards(cards: Array<CarouselCard | CarouselCardInput>): CarouselCard[] {
   if (!Array.isArray(cards) || cards.length === 0) {
     throw new Error('sendCarousel requiere al menos una tarjeta')
   }
@@ -858,17 +1068,40 @@ function normalizeCards(cards: CarouselCard[]): CarouselCard[] {
     throw new Error('WhatsApp permite máximo 10 tarjetas por carrusel')
   }
   return cards.map((card, index) => {
-    const text = String(card.text ?? '').trim()
+    const rawText = card.text ?? card.body ?? ''
+    const text = String(rawText).trim()
     if (!text) throw new Error(`tarjeta ${index + 1} necesita text`)
-    const buttons = card.buttons ? normalizeButtons(card.buttons) : undefined
+    const buttons = card.buttons ? normalizeCardButtons(card.buttons, card) : undefined
+    const advanced = card as CarouselCardInput
     return {
       ...(card.title ? { title: String(card.title).trim() } : {}),
       ...(card.subtitle ? { subtitle: String(card.subtitle).trim() } : {}),
       text,
+      ...(card.body !== undefined ? { body: String(card.body) } : {}),
+      ...(advanced.id ? { id: String(advanced.id) } : {}),
       ...(card.footer ? { footer: String(card.footer).trim() } : {}),
+      ...(advanced.image !== undefined ? { image: advanced.image } : {}),
+      ...(advanced.video !== undefined ? { video: advanced.video } : {}),
+      ...(advanced.multiple ? { multiple: true } : {}),
+      ...(advanced.maxButtons !== undefined ? { maxButtons: advanced.maxButtons } : {}),
+      ...(advanced.messageParams ? { messageParams: advanced.messageParams } : {}),
+      ...(advanced.bottomSheet ? { bottomSheet: advanced.bottomSheet } : {}),
+      ...(advanced.tapTarget ? { tapTarget: advanced.tapTarget } : {}),
+      ...(advanced.limitedTimeOffer ? { limitedTimeOffer: advanced.limitedTimeOffer } : {}),
+      ...(advanced.rawParams ? { rawParams: advanced.rawParams } : {}),
       ...(buttons ? { buttons } : {}),
     }
   })
+}
+
+function normalizeCardButtons(
+  buttons: ButtonInput[],
+  card: CarouselCard | CarouselCardInput,
+): ButtonInput[] {
+  if (buttons.every(isLegacyQuickReply)) return normalizeButtons(buttons as QuickReplyButton[])
+  const advanced = card as CarouselCardInput
+  normalizeAdvancedButtons(buttons, { multiple: advanced.multiple, max: advanced.maxButtons })
+  return buttons
 }
 
 function resolveOptions(options: ClientOptions): ResolvedOptions {

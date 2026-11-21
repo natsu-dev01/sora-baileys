@@ -1,18 +1,21 @@
 import type {
+  AdvancedInteractiveOptions,
   AuthSession,
   ButtonMessageOptions,
   CarouselCard,
   CarouselOptions,
   CloseReason,
   ConnectAdapterOptions,
-  InteractiveButton,
+  ListMessageContent,
   LiveSocket,
   MessageKey,
   NormalizedMessage,
-  QuickReplyButton,
+  RawInteractiveOptions,
   SocketAdapter,
   SocketAdapterEvents,
+  TemplateButtonsContent,
 } from '../types.js'
+import type { ButtonInput, CarouselCardInput } from '../core/interactive.js'
 
 export interface MockAdapterOptions {
   /** Retardo simulado hasta `open`. Por defecto 10 ms. */
@@ -158,16 +161,28 @@ export class MockAdapter implements SocketAdapter {
   }
 
   /** Botones enviados en el último socket (para assert en tests). */
-  get sentButtons(): Array<{ to: string; text: string; buttons: QuickReplyButton[] }> {
+  get sentButtons(): Array<{ to: string; text: string; buttons: ButtonInput[] }> {
     return this.current?.sentButtons ?? []
   }
 
-  get sentInteractive(): Array<{ to: string; text: string; buttons: InteractiveButton[] }> {
+  get sentInteractive(): Array<{ to: string; text: string; buttons: ButtonInput[] }> {
     return this.current?.sentInteractive ?? []
   }
 
-  get sentCarousels(): Array<{ to: string; cards: CarouselCard[] }> {
+  get sentCarousels(): Array<{ to: string; cards: Array<CarouselCard | CarouselCardInput> }> {
     return this.current?.sentCarousels ?? []
+  }
+
+  get sentLists(): Array<{ to: string; content: ListMessageContent }> {
+    return this.current?.sentLists ?? []
+  }
+
+  get sentTemplates(): Array<{ to: string; content: TemplateButtonsContent }> {
+    return this.current?.sentTemplates ?? []
+  }
+
+  get sentRawInteractive(): Array<{ to: string; content: Record<string, unknown> }> {
+    return this.current?.sentRawInteractive ?? []
   }
 
   /** Reenvíos solicitados en el socket activo. */
@@ -228,9 +243,12 @@ interface MockSocketOptions {
 
 class MockSocket implements LiveSocket {
   private closed = false
-  readonly sentButtons: Array<{ to: string; text: string; buttons: QuickReplyButton[] }> = []
-  readonly sentInteractive: Array<{ to: string; text: string; buttons: InteractiveButton[] }> = []
-  readonly sentCarousels: Array<{ to: string; cards: CarouselCard[] }> = []
+  readonly sentButtons: Array<{ to: string; text: string; buttons: ButtonInput[] }> = []
+  readonly sentInteractive: Array<{ to: string; text: string; buttons: ButtonInput[] }> = []
+  readonly sentCarousels: Array<{ to: string; cards: Array<CarouselCard | CarouselCardInput> }> = []
+  readonly sentLists: Array<{ to: string; content: ListMessageContent }> = []
+  readonly sentTemplates: Array<{ to: string; content: TemplateButtonsContent }> = []
+  readonly sentRawInteractive: Array<{ to: string; content: Record<string, unknown> }> = []
   readonly resendRequests: Array<{ key: MessageKey; raw?: unknown }> = []
   readonly sentMetadata: Array<Record<string, unknown>> = []
   readonly presences: Array<{ presence: string; jid: string }> = []
@@ -248,7 +266,7 @@ class MockSocket implements LiveSocket {
   async sendButtons(
     to: string,
     text: string,
-    buttons: QuickReplyButton[],
+    buttons: ButtonInput[],
     _options?: ButtonMessageOptions,
   ): Promise<{ id: string }> {
     if (this.closed) throw new Error('socket closed')
@@ -262,7 +280,7 @@ class MockSocket implements LiveSocket {
   async sendInteractive(
     to: string,
     text: string,
-    buttons: InteractiveButton[],
+    buttons: ButtonInput[],
     _options?: ButtonMessageOptions,
   ): Promise<{ id: string }> {
     if (this.closed) throw new Error('socket closed')
@@ -275,7 +293,7 @@ class MockSocket implements LiveSocket {
 
   async sendCarousel(
     to: string,
-    cards: CarouselCard[],
+    cards: Array<CarouselCard | CarouselCardInput>,
     _options?: CarouselOptions,
   ): Promise<{ id: string }> {
     if (this.closed) throw new Error('socket closed')
@@ -284,6 +302,45 @@ class MockSocket implements LiveSocket {
     this.sentMetadata.push({ ..._options?.metadata })
     this.sentCarousels.push({ to, cards })
     return { id: `mock-carousel-${++counter}` }
+  }
+
+  async sendListMessage(
+    to: string,
+    content: ListMessageContent,
+    options?: AdvancedInteractiveOptions,
+  ): Promise<{ id: string }> {
+    if (this.closed) throw new Error('socket closed')
+    await delay(this.opts.latencyMs)
+    if (this.opts.shouldFail()) throw new Error('mock send failure')
+    this.sentMetadata.push({ ...options?.metadata })
+    this.sentLists.push({ to, content })
+    return { id: `mock-list-${++counter}` }
+  }
+
+  async sendTemplateButtons(
+    to: string,
+    content: TemplateButtonsContent,
+    options?: AdvancedInteractiveOptions,
+  ): Promise<{ id: string }> {
+    if (this.closed) throw new Error('socket closed')
+    await delay(this.opts.latencyMs)
+    if (this.opts.shouldFail()) throw new Error('mock send failure')
+    this.sentMetadata.push({ ...options?.metadata })
+    this.sentTemplates.push({ to, content })
+    return { id: `mock-template-${++counter}` }
+  }
+
+  async sendInteractiveMessage(
+    to: string,
+    content: Record<string, unknown>,
+    options?: RawInteractiveOptions,
+  ): Promise<{ id: string }> {
+    if (this.closed) throw new Error('socket closed')
+    await delay(this.opts.latencyMs)
+    if (this.opts.shouldFail()) throw new Error('mock send failure')
+    this.sentMetadata.push({ ...options?.metadata })
+    this.sentRawInteractive.push({ to, content })
+    return { id: `mock-interactive-raw-${++counter}` }
   }
 
   async requestMessageResend(key: MessageKey, raw?: unknown): Promise<void> {

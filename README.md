@@ -17,7 +17,7 @@ Cliente de WhatsApp Web propio, tipado y **orientado a resiliencia**. No es un c
 | QR/pairing mezclados en la lógica de negocio | Eventos `qr` y `pairingCode` separados, con opción de imprimir QR |
 | Difícil de testear sin WhatsApp | `MockAdapter` incluido: fallos, caídas, mensajes, botones y healthcheck simulados |
 | Elegir QR o pairing code a mano | Menú CLI con flechas/atajos en `examples/cli-bot.mjs` y `choose()` reutilizable |
-| Botones de WhatsApp mezclados con texto plano | `sendButtons()` + evento `button` con `buttonId` normalizado |
+| Botones de WhatsApp mezclados con texto plano | `sendButtons()`, native flow, listas y carruseles + evento `button` con `buttonId` normalizado |
 | Placeholder «No se pudo cargar este mensaje» | Store de mensajes salientes + `getMessage` + reenvío automático |
 
 ## Instalación
@@ -122,8 +122,27 @@ client.on('button', (reply) => {
 
 - WhatsApp permite **máximo 3** botones y textos de hasta 20 caracteres; el cliente valida ambos.
 - Los mensajes con botones usan la misma cola que el texto: si se envían durante una caída, se reintentan al reconectar.
-- El adaptador de Baileys envía `buttonsMessage` con botones de tipo `RESPONSE`.
+- El adaptador de Baileys usa native flow con nodos `biz`/`bot`, `cta_url`, `cta_call`, `cta_copy`, `single_select`, listas, plantillas, carruseles y flows (`galaxy_message`), con fallback a texto.
 - El evento `button` se emite además de `message`, para que no tengas que inspeccionar el raw.
+
+```js
+import { button } from '@sora/baileys'
+
+await client.sendInteractive(msg.from, 'Menú', [
+  button.url('Web', 'https://sora.dev'),
+  button.copy('Copiar', 'CUPON'),
+  button.call('Llamar', '5215512345678'),
+])
+
+await client.sendListMessage(msg.from, {
+  title: 'Opciones',
+  sections: [{ title: 'Principal', rows: [{ id: 'a', title: 'A' }] }],
+})
+
+await client.sendCarousel(msg.from, [
+  { title: 'Uno', body: 'Texto', image: 'https://.../1.jpg', buttons: [{ text: 'A', id: 'a' }] },
+])
+```
 
 ## API principal
 
@@ -155,7 +174,13 @@ client.on('button', (reply) => {
 - `stop(): Promise<void>` — detiene, guarda credenciales y suelta el socket (idempotente).
 - `restart(): Promise<void>` — `stop()` + limpieza + `start()`.
 - `sendText(to, text, metadata?): Promise<{id, queued}>` — envía o encola.
-- `sendButtons(to, text, buttons, options?): Promise<{id, queued}>` — botones de respuesta rápida (máx. 3).
+- `sendButtons(to, text, buttons, options?): Promise<{id, queued}>` — respuesta rápida (máx. 3) o botones avanzados.
+- `sendInteractive(to, text, buttons, options?)` — URL, llamada, copiar, listas y flows.
+- `sendCarousel(to, cards, options?)` — hasta 10 tarjetas con multimedia y botones.
+- `sendListMessage(to, content)` / `sendList(...)` — lista clásica con secciones y filas.
+- `sendTemplateButtons(to, content)` — botones heredados `buttonsMessage`.
+- `sendInteractiveMessage(to, content, options?)` — contenido nativo crudo con nodos `biz`/`bot`.
+- `interactive` y `button` — helpers del módulo interactivo avanzado.
 - `requestResend(key, raw?)` — pide al móvil que reenvíe un placeholder; devuelve `true` si se solicitó.
 - `storedMessages` — store de mensajes salientes usado por Baileys para responder reenvíos.
 - `choose(config)` / `promptText(question)` — menú CLI y entrada de texto, exportados desde el paquete.
@@ -245,7 +270,7 @@ El adaptador debe traducir los eventos de su transporte a `open`, `close`, `qr`,
 - Respuestas de botón de `buttonsResponseMessage` y `templateButtonReplyMessage` se normalizan en `buttonId`/`buttonText`.
 - Validación de botones (1-3, id/label obligatorios, 20 caracteres máximos) antes de tocar el transporte.
 - `messageTimestamp` de Baileys (segundos o `Long`) se normaliza a ms; el heartbeat ya no cierra el socket con `stale` falso.
-- TypeScript actualizado a 7.x y build/tests verificados (28/28).
+- TypeScript actualizado a 7.x y build/tests verificados (38/38).
 
 ## Limitaciones
 

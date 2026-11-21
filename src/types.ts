@@ -1,3 +1,12 @@
+import type {
+  BinaryNodeLike,
+  BottomSheetOptions,
+  ButtonInput,
+  CarouselCardInput,
+  LimitedTimeOfferOptions,
+  TapTargetOptions,
+} from './core/interactive.js'
+
 /** Estados del ciclo de vida del cliente. */
 export type ConnectionState =
   | 'idle'
@@ -121,7 +130,27 @@ export interface QuickReplyButton {
   label: string
 }
 
-export interface ButtonMessageOptions {
+/** Opciones interactivas avanzadas compartidas por botones, listas y carruseles. */
+export interface AdvancedInteractiveOptions {
+  title?: string
+  image?: unknown
+  video?: unknown
+  quoted?: unknown
+  fallbackText?: string
+  multiple?: boolean
+  maxButtons?: number
+  messageParams?: Record<string, unknown>
+  bottomSheet?: BottomSheetOptions
+  tapTarget?: TapTargetOptions
+  limitedTimeOffer?: LimitedTimeOfferOptions
+  rawParams?: Record<string, unknown>
+  mdPatch?: boolean
+  contextInfo?: Record<string, unknown>
+  additionalNodes?: BinaryNodeLike[]
+  metadata?: Record<string, unknown>
+}
+
+export interface ButtonMessageOptions extends AdvancedInteractiveOptions {
   header?: string
   footer?: string
   metadata?: Record<string, unknown>
@@ -138,27 +167,74 @@ export interface InteractiveButton {
 export interface CarouselCard {
   title?: string
   subtitle?: string
-  text: string
+  text?: string
+  /** Alias de `text`, usado por el módulo interactivo avanzado. */
+  body?: string
+  id?: string
   footer?: string
-  buttons?: QuickReplyButton[]
+  image?: unknown
+  video?: unknown
+  multiple?: boolean
+  maxButtons?: number
+  messageParams?: Record<string, unknown>
+  bottomSheet?: BottomSheetOptions
+  tapTarget?: TapTargetOptions
+  limitedTimeOffer?: LimitedTimeOfferOptions
+  rawParams?: Record<string, unknown>
+  buttons?: ButtonInput[]
 }
 
-export interface CarouselOptions {
+export interface CarouselOptions extends AdvancedInteractiveOptions {
   header?: string
+  /** Intro del carrusel; alias de `header`. */
+  text?: string
   footer?: string
   metadata?: Record<string, unknown>
 }
 
-export type OutboundKind = 'text' | 'buttons' | 'interactive' | 'carousel'
+/** Contenido para `sendListMessage` / `sendList`. */
+export interface ListMessageContent extends AdvancedInteractiveOptions {
+  text?: string
+  footer?: string
+  buttonText?: string
+  sections?: unknown[]
+  listType?: number
+  metadata?: Record<string, unknown>
+}
+
+/** Contenido para `sendTemplateButtons` (formato heredado `buttonsMessage`). */
+export interface TemplateButtonsContent extends AdvancedInteractiveOptions {
+  text?: string
+  footer?: string
+  buttons?: ButtonInput[]
+  metadata?: Record<string, unknown>
+}
+
+/** Opciones para `sendInteractiveMessage` (contenido nativo crudo). */
+export interface RawInteractiveOptions {
+  quoted?: unknown
+  mdPatch?: boolean
+  additionalNodes?: BinaryNodeLike[]
+  metadata?: Record<string, unknown>
+}
+
+/** Payload interactivo avanzado guardado en la cola. */
+export interface AdvancedOutbound {
+  content: Record<string, unknown>
+  options?: Record<string, unknown>
+}
+
+export type OutboundKind = 'text' | 'buttons' | 'interactive' | 'carousel' | 'list' | 'template' | 'raw'
 
 export interface OutboundMessage {
   to: string
   text: string
   id?: string
   kind?: OutboundKind
-  buttons?: QuickReplyButton[]
-  interactiveButtons?: InteractiveButton[]
-  cards?: CarouselCard[]
+  buttons?: ButtonInput[]
+  interactiveButtons?: ButtonInput[]
+  cards?: Array<CarouselCard | CarouselCardInput>
+  advanced?: AdvancedOutbound
   header?: string
   footer?: string
   metadata?: Record<string, unknown>
@@ -281,19 +357,34 @@ export interface LiveSocket {
   sendButtons?(
     to: string,
     text: string,
-    buttons: QuickReplyButton[],
+    buttons: ButtonInput[],
     options?: ButtonMessageOptions,
   ): Promise<{ id: string }>
   sendInteractive?(
     to: string,
     text: string,
-    buttons: InteractiveButton[],
+    buttons: ButtonInput[],
     options?: ButtonMessageOptions,
   ): Promise<{ id: string }>
   sendCarousel?(
     to: string,
-    cards: CarouselCard[],
+    cards: Array<CarouselCard | CarouselCardInput>,
     options?: CarouselOptions,
+  ): Promise<{ id: string }>
+  sendListMessage?(
+    to: string,
+    content: ListMessageContent,
+    options?: AdvancedInteractiveOptions,
+  ): Promise<{ id: string }>
+  sendTemplateButtons?(
+    to: string,
+    content: TemplateButtonsContent,
+    options?: AdvancedInteractiveOptions,
+  ): Promise<{ id: string }>
+  sendInteractiveMessage?(
+    to: string,
+    content: Record<string, unknown>,
+    options?: RawInteractiveOptions,
   ): Promise<{ id: string }>
   isHealthy?(): boolean | Promise<boolean>
   disconnect?(): Promise<void>

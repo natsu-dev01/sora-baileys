@@ -425,3 +425,104 @@ test('aplica dailyLimit, ids estables y presencia de escritura', async () => {
 
   await client.stop()
 })
+
+test('envía botones avanzados, listas, plantillas y contenido nativo', async () => {
+  const adapter = new MockAdapter({ connectDelayMs: 5, qrOnFresh: false })
+  adapter.markLinked()
+  const client = new BaileysClient({
+    ...fastOptions,
+    adapter,
+    sessionDir: 'linked-advanced-interactive-test',
+  })
+
+  const connected = client.waitForEvent('connected')
+  await client.start()
+  await connected
+
+  const advancedButtons = await client.sendButtons('1@s.whatsapp.net', 'Elige', [
+    { text: 'Web', url: 'https://sora.dev' },
+    { text: 'Copiar', copy: 'CUPON' },
+  ])
+  assert.equal(advancedButtons.queued, false)
+  assert.deepEqual(adapter.sentButtons[0].buttons, [
+    { text: 'Web', url: 'https://sora.dev' },
+    { text: 'Copiar', copy: 'CUPON' },
+  ])
+
+  const list = client.waitForEvent('sent', 2000, (p) => p.kind === 'list')
+  const listResult = await client.sendListMessage('1@s.whatsapp.net', {
+    title: 'Menú',
+    text: 'Opciones',
+    sections: [{ title: 'Principal', rows: [{ id: 'a', title: 'A' }] }],
+  })
+  assert.equal(listResult.queued, false)
+  await list
+  assert.equal(adapter.sentLists[0].content.sections[0].rows[0].id, 'a')
+
+  const template = client.waitForEvent('sent', 2000, (p) => p.kind === 'template')
+  const templateResult = await client.sendTemplateButtons('1@s.whatsapp.net', {
+    text: 'Confirmar',
+    buttons: [{ text: 'Sí', id: 'yes' }, { text: 'No', id: 'no' }],
+  })
+  assert.equal(templateResult.queued, false)
+  await template
+  assert.equal(adapter.sentTemplates[0].content.buttons.length, 2)
+
+  const raw = client.waitForEvent('sent', 2000, (p) => p.kind === 'raw')
+  const rawResult = await client.sendInteractiveMessage('1@s.whatsapp.net', {
+    interactiveMessage: { nativeFlowMessage: { buttons: [] } },
+  })
+  assert.equal(rawResult.queued, false)
+  await raw
+  assert.ok(adapter.sentRawInteractive[0].content.interactiveMessage)
+
+  const carousel = await client.sendCarousel('1@s.whatsapp.net', [
+    { title: 'Uno', body: 'Cuerpo', image: 'https://cdn.test/1.jpg', buttons: [{ text: 'A', id: 'a' }] },
+  ])
+  assert.equal(carousel.queued, false)
+  assert.equal(adapter.sentCarousels[0].cards[0].image, 'https://cdn.test/1.jpg')
+  assert.equal(adapter.sentCarousels[0].cards[0].text, 'Cuerpo')
+
+  await assert.rejects(
+    () => client.sendListMessage('1@s.whatsapp.net', { sections: [] }),
+    /al menos una sección/,
+  )
+  await assert.rejects(
+    () => client.sendTemplateButtons('1@s.whatsapp.net', { text: 'x', buttons: [] }),
+    /al menos un botón/,
+  )
+
+  await client.stop()
+})
+
+test('encola mensajes interactivos avanzados durante una caída', async () => {
+  const adapter = new MockAdapter({ connectDelayMs: 5, qrOnFresh: false })
+  adapter.markLinked()
+  const client = new BaileysClient({
+    ...fastOptions,
+    adapter,
+    sessionDir: 'linked-advanced-queue-test',
+  })
+
+  const firstConnected = client.waitForEvent('connected')
+  await client.start()
+  await firstConnected
+
+  const disconnected = client.waitForEvent('disconnected', 2000, (p) => p.reason === 'network')
+  const secondConnected = client.waitForEvent('connected', 3000)
+  const flushed = client.waitForEvent('flushed', 3000)
+  adapter.drop('network')
+  await disconnected
+
+  const queued = await client.sendListMessage('1@s.whatsapp.net', {
+    text: 'Opciones',
+    sections: [{ rows: [{ id: 'a', title: 'A' }] }],
+  })
+  assert.equal(queued.queued, true)
+  assert.equal(client.status.queueSize, 1)
+
+  await secondConnected
+  assert.equal((await flushed).sent, 1)
+  assert.equal(adapter.sentLists.length, 1)
+  await client.stop()
+})

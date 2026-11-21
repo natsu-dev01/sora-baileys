@@ -1,18 +1,37 @@
+import {
+  getInteractiveReply,
+  normalizeButtons,
+  sendButtons as sendInteractiveButtons,
+  sendCarousel as sendInteractiveCarousel,
+  sendInteractiveMessage as relayRawInteractive,
+  sendList as sendInteractiveList,
+  sendListMessage as sendClassicList,
+  sendTemplateButtons as sendInteractiveTemplateButtons,
+} from '../core/interactive.js'
+import type {
+  ButtonInput,
+  CarouselCardInput,
+  InteractiveDeps,
+  InteractiveSocket,
+  UpstreamHelpers,
+} from '../core/interactive.js'
 import { createRetryCache } from '../core/message-store.js'
 import { toMillis } from '../core/time.js'
 import type {
+  AdvancedInteractiveOptions,
   AuthSession,
   ButtonMessageOptions,
   CarouselCard,
   CarouselOptions,
   CloseReason,
   ConnectAdapterOptions,
-  InteractiveButton,
+  ListMessageContent,
   LiveSocket,
   LoggerLike,
   MessageKey,
   MessageStore,
-  QuickReplyButton,
+  RawInteractiveOptions,
+  TemplateButtonsContent,
   SocketAdapter,
 } from '../types.js'
 
@@ -54,28 +73,42 @@ interface BaileysSocket {
     data?: Record<string, unknown>,
   ) => Promise<string | undefined>
   sendPresenceUpdate?: (presence: string, jid: string) => Promise<void>
+  relayMessage?(
+    jid: string,
+    message: Record<string, unknown>,
+    options?: Record<string, unknown>,
+  ): Promise<unknown>
+  waUploadToServer?(source: unknown, type?: string): Promise<unknown>
   end?: (error?: unknown) => void
-  authState?: { creds?: { registered?: boolean } }
+  authState?: { creds?: { registered?: boolean; me?: { id?: string } } }
+  user?: { id?: string }
   ws?: { readyState?: number }
 }
 
 let cachedModule: BaileysModule | undefined
 
+async function importTransport(specifier: string): Promise<BaileysModule> {
+  // Specifier variable: mantiene el peer opcional fuera del grafo de tipos.
+  return (await import(specifier)) as unknown as BaileysModule
+}
+
 async function loadBaileysModule(logger?: LoggerLike): Promise<BaileysModule> {
   if (cachedModule) return cachedModule
   try {
-    // Specifier no literal: mantiene el peer opcional fuera del grafo de tipos.
-    const specifier = '@whiskeysockets/baileys'
-    const mod = (await import(specifier)) as unknown as BaileysModule
-    cachedModule = mod
-    return mod
-  } catch (error) {
-    logger?.error('@whiskeysockets/baileys is required for BaileysAdapter')
-    throw new Error(
-      'BaileysAdapter necesita @whiskeysockets/baileys. Instálalo con: npm install @whiskeysockets/baileys',
-      { cause: error },
-    )
+    // Preferimos el subpath propio; si el peer no está instalado caemos al directo.
+    cachedModule = await importTransport('@sora/baileys/upstream')
+  } catch {
+    try {
+      cachedModule = await importTransport('@whiskeysockets/baileys')
+    } catch (error) {
+      logger?.error('@whiskeysockets/baileys is required for BaileysAdapter')
+      throw new Error(
+        'BaileysAdapter necesita @whiskeysockets/baileys. Instálalo con: npm install @whiskeysockets/baileys',
+        { cause: error },
+      )
+    }
   }
+  return cachedModule
 }
 
 /**
@@ -165,7 +198,7 @@ export class BaileysAdapter implements SocketAdapter {
       }
     }
 
-    return new BaileysLiveSocket(socket, messageStore, options.sendTimeoutMs)
+    return new BaileysLiveSocket(socket, messageStore, options.sendTimeoutMs, mod as unknown as UpstreamHelpers)
   }
 }
 
@@ -211,8 +244,20 @@ export function normalizeMessage(message: Record<string, unknown>): import('../t
   const buttonText = buttonReply?.selectedDisplayText
 
   const nativeFlow = content.interactiveResponseMessage?.nativeFlowResponseMessage
-  const nativeParams = parseJson<{ id?: string; display_text?: string; text?: string }>(nativeFlow?.paramsJson)
-  const interactiveId = nativeParams?.id ?? nativeParams?.text
+  const nativeParams = parseJson<{
+    id?: string
+    button_id?: string
+    selectedId?: string
+    selected_id?: string
+    display_text?: string
+    text?: string
+  }>(nativeFlow?.paramsJson)
+  const interactiveId = nativeParams?.id
+    ?? nativeParams?.button_id
+    ?? nativeParams?.selectedId
+    ?? nativeParams?.selected_id
+    ?? getInteractiveReply(message)
+    ?? undefined
   const interactiveText = nativeParams?.display_text ?? content.interactiveResponseMessage?.body?.text
 
   const rawStub = message.messageStubType
@@ -247,25 +292,8 @@ export function normalizeMessage(message: Record<string, unknown>): import('../t
   }
 }
 
-function toNativeFlowButtons(buttons: InteractiveButton[]): Array<{ name: string; buttonParamsJson: string }> {
-  return buttons.map((button) => {
-    if (button.url) {
-      return {
-        name: 'url',
-        buttonParamsJson: JSON.stringify({ display_text: button.label, url: button.url }),
-      }
-    }
-    if (button.phoneNumber) {
-      return {
-        name: 'call',
-        buttonParamsJson: JSON.stringify({ display_text: button.label, phone_number: button.phoneNumber }),
-      }
-    }
-    return {
-      name: 'quick_reply',
-      buttonParamsJson: JSON.stringify({ display_text: button.label, id: button.id ?? button.label }),
-    }
-  })
+function toNativeFlowButtons(buttons: ButtonInput[]): Array<{ name: string; buttonParamsJson: string }> {
+  return normalizeButtons(buttons)
 }
 
 function parseJson<T>(raw: string | undefined): T | undefined {
@@ -282,7 +310,26 @@ class BaileysLiveSocket implements LiveSocket {
     private readonly socket: BaileysSocket,
     private readonly store?: MessageStore,
     private readonly sendTimeoutMs = 0,
+    private readonly upstream?: UpstreamHelpers,
   ) {}
+
+  /** Timeout compartido por `sendMessage` y `relayMessage`. */
+  private withTimeout<T>(work: Promise<T>, label: string): Promise<T> {
+    if (this.sendTimeoutMs <= 0) return work
+    let timer: NodeJS.Timeout | undefined
+    return Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} timeout after ${this.sendTimeoutMs}ms`)),
+          this.sendTimeoutMs,
+        )
+        timer.unref?.()
+      }),
+    ]).finally(() => {
+      if (timer) clearTimeout(timer)
+    })
+  }
 
   /**
    * Envía con id estable y timeout. El id evita duplicados si un envío lento se
@@ -296,26 +343,46 @@ class BaileysLiveSocket implements LiveSocket {
     const options: Record<string, unknown> = { ...metadata }
     const id = typeof options.id === 'string' && options.id.length > 0 ? options.id : undefined
     if (id) options.messageId = id
+    return this.withTimeout(this.socket.sendMessage(to, content, options), 'sendMessage')
+  }
 
-    if (this.sendTimeoutMs <= 0) {
-      return this.socket.sendMessage(to, content, options)
-    }
+  private interactiveDeps(): InteractiveDeps {
+    return { upstream: this.upstream }
+  }
 
-    let timer: NodeJS.Timeout | undefined
-    try {
-      return await Promise.race([
-        this.socket.sendMessage(to, content, options),
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`sendMessage timeout after ${this.sendTimeoutMs}ms`)),
-            this.sendTimeoutMs,
-          )
-          timer.unref?.()
-        }),
-      ])
-    } finally {
-      if (timer) clearTimeout(timer)
+  private interactiveSocket(): InteractiveSocket {
+    const relayMessage = this.socket.relayMessage
+    if (!relayMessage) throw new Error('El socket no puede enviar mensajes interactivos')
+    return {
+      relayMessage: relayMessage.bind(this.socket),
+      ...(this.socket.sendMessage ? { sendMessage: this.socket.sendMessage.bind(this.socket) } : {}),
+      ...(this.socket.waUploadToServer
+        ? { waUploadToServer: this.socket.waUploadToServer.bind(this.socket) }
+        : {}),
+      ...(this.socket.authState ? { authState: this.socket.authState } : {}),
+      ...(this.socket.user ? { user: this.socket.user } : {}),
     }
+  }
+
+  private messageId(metadata?: Record<string, unknown>): string | undefined {
+    const id = metadata?.id
+    return typeof id === 'string' && id.length > 0 ? id : undefined
+  }
+
+  private rememberInteractive(
+    result: { key?: { id?: string }; message?: Record<string, unknown> } | null | undefined,
+    to: string,
+    metadata?: Record<string, unknown>,
+  ): void {
+    if (!result?.message) return
+    this.remember(result.message, to, result.key?.id, this.messageId(metadata))
+  }
+
+  private resultId(
+    result: { key?: { id?: string } } | null | undefined,
+    metadata?: Record<string, unknown>,
+  ): string {
+    return result?.key?.id ?? this.messageId(metadata) ?? `unknown-${Date.now()}`
   }
 
   async sendPresenceUpdate(presence: 'composing' | 'paused', jid: string): Promise<void> {
@@ -363,41 +430,102 @@ class BaileysLiveSocket implements LiveSocket {
   async sendText(to: string, text: string, metadata?: Record<string, unknown>): Promise<{ id: string }> {
     const content: Record<string, unknown> = { text }
     const result = await this.send(to, content, metadata)
-    this.remember(content, to, result?.key?.id, metadata?.id as string | undefined)
-    return { id: result?.key?.id ?? `unknown-${Date.now()}` }
+    this.remember(content, to, result?.key?.id, this.messageId(metadata))
+    return { id: result?.key?.id ?? this.messageId(metadata) ?? `unknown-${Date.now()}` }
   }
 
   async sendButtons(
     to: string,
     text: string,
-    buttons: QuickReplyButton[],
+    buttons: ButtonInput[],
     options: ButtonMessageOptions = {},
   ): Promise<{ id: string }> {
-    const hasHeader = Boolean(options.header)
+    if (this.socket.relayMessage) {
+      const result = await this.withTimeout(sendInteractiveButtons(this.interactiveSocket(), to, {
+        title: options.title ?? options.header,
+        text,
+        footer: options.footer,
+        buttons,
+        image: options.image,
+        video: options.video,
+        quoted: options.quoted,
+        fallbackText: options.fallbackText,
+        contextInfo: options.contextInfo,
+        multiple: options.multiple,
+        maxButtons: options.maxButtons,
+        messageParams: options.messageParams,
+        bottomSheet: options.bottomSheet,
+        tapTarget: options.tapTarget,
+        limitedTimeOffer: options.limitedTimeOffer,
+        rawParams: options.rawParams,
+        mdPatch: options.mdPatch,
+        additionalNodes: options.additionalNodes,
+      }, {
+        quoted: options.quoted,
+        mdPatch: options.mdPatch,
+        fallbackText: options.fallbackText,
+        messageId: this.messageId(options.metadata),
+      }, this.interactiveDeps()), 'relayMessage')
+      this.rememberInteractive(result, to, options.metadata)
+      return { id: this.resultId(result, options.metadata) }
+    }
+
     const content: Record<string, unknown> = {
       buttonsMessage: {
         contentText: text,
-        ...(hasHeader ? { text: options.header, headerType: 2 } : { headerType: 1 }),
+        ...(options.header ? { text: options.header, headerType: 2 } : { headerType: 1 }),
         ...(options.footer ? { footerText: options.footer } : {}),
-        buttons: buttons.map((button) => ({
-          buttonId: button.id,
-          buttonText: { displayText: button.label },
-          type: 1,
-        })),
+        buttons: normalizeButtons(buttons).map((button, index) => {
+          const params = parseJson<{ id?: string; display_text?: string; title?: string }>(button.buttonParamsJson)
+          return {
+            buttonId: params?.id ?? `button_${index + 1}`,
+            buttonText: { displayText: params?.display_text ?? params?.title ?? `Botón ${index + 1}` },
+            type: 1,
+          }
+        }),
       },
     }
     const result = await this.send(to, content, options.metadata)
-    this.remember(content, to, result?.key?.id, options.metadata?.id as string | undefined)
-
-    return { id: result?.key?.id ?? `unknown-${Date.now()}` }
+    this.remember(content, to, result?.key?.id, this.messageId(options.metadata))
+    return { id: this.resultId(result, options.metadata) }
   }
 
   async sendInteractive(
     to: string,
     text: string,
-    buttons: InteractiveButton[],
+    buttons: ButtonInput[],
     options: ButtonMessageOptions = {},
   ): Promise<{ id: string }> {
+    if (this.socket.relayMessage) {
+      const result = await this.withTimeout(sendInteractiveButtons(this.interactiveSocket(), to, {
+        title: options.title ?? options.header,
+        text,
+        footer: options.footer,
+        buttons,
+        image: options.image,
+        video: options.video,
+        quoted: options.quoted,
+        fallbackText: options.fallbackText,
+        contextInfo: options.contextInfo,
+        multiple: options.multiple,
+        maxButtons: options.maxButtons,
+        messageParams: options.messageParams,
+        bottomSheet: options.bottomSheet,
+        tapTarget: options.tapTarget,
+        limitedTimeOffer: options.limitedTimeOffer,
+        rawParams: options.rawParams,
+        mdPatch: options.mdPatch,
+        additionalNodes: options.additionalNodes,
+      }, {
+        quoted: options.quoted,
+        mdPatch: options.mdPatch,
+        fallbackText: options.fallbackText,
+        messageId: this.messageId(options.metadata),
+      }, this.interactiveDeps()), 'relayMessage')
+      this.rememberInteractive(result, to, options.metadata)
+      return { id: this.resultId(result, options.metadata) }
+    }
+
     const content: Record<string, unknown> = {
       interactiveMessage: {
         body: { text },
@@ -410,16 +538,35 @@ class BaileysLiveSocket implements LiveSocket {
       },
     }
     const result = await this.send(to, content, options.metadata)
-    this.remember(content, to, result?.key?.id, options.metadata?.id as string | undefined)
-
-    return { id: result?.key?.id ?? `unknown-${Date.now()}` }
+    this.remember(content, to, result?.key?.id, this.messageId(options.metadata))
+    return { id: this.resultId(result, options.metadata) }
   }
 
   async sendCarousel(
     to: string,
-    cards: CarouselCard[],
+    cards: Array<CarouselCard | CarouselCardInput>,
     options: CarouselOptions = {},
   ): Promise<{ id: string }> {
+    if (this.socket.relayMessage) {
+      const contentText = options.header ?? (options as CarouselOptions & { text?: string }).text
+      const result = await this.withTimeout(sendInteractiveCarousel(this.interactiveSocket(), to, {
+        text: contentText ?? cards[0]?.text ?? '',
+        footer: options.footer,
+        cards: cards as CarouselCardInput[],
+        quoted: options.quoted,
+        fallbackText: options.fallbackText,
+        mdPatch: options.mdPatch,
+        additionalNodes: options.additionalNodes,
+      }, {
+        quoted: options.quoted,
+        mdPatch: options.mdPatch,
+        fallbackText: options.fallbackText,
+        messageId: this.messageId(options.metadata),
+      }, this.interactiveDeps()), 'relayMessage')
+      this.rememberInteractive(result, to, options.metadata)
+      return { id: this.resultId(result, options.metadata) }
+    }
+
     const content: Record<string, unknown> = {
       interactiveMessage: {
         body: { text: options.header ?? cards[0]?.text ?? '' },
@@ -429,18 +576,10 @@ class BaileysLiveSocket implements LiveSocket {
             ...(card.title || card.subtitle
               ? { header: { title: card.title ?? '', subtitle: card.subtitle ?? '', hasMediaAttachment: false } }
               : {}),
-            body: { text: card.text },
+            body: { text: card.body ?? card.text ?? '' },
             ...(card.footer ? { footer: { text: card.footer } } : {}),
             ...(card.buttons && card.buttons.length > 0
-              ? {
-                  nativeFlowMessage: {
-                    buttons: card.buttons.map((button) => ({
-                      name: 'quick_reply',
-                      buttonParamsJson: JSON.stringify({ display_text: button.label, id: button.id }),
-                    })),
-                    messageVersion: 3,
-                  },
-                }
+              ? { nativeFlowMessage: { buttons: toNativeFlowButtons(card.buttons), messageVersion: 3 } }
               : {}),
           })),
           messageVersion: 1,
@@ -449,9 +588,63 @@ class BaileysLiveSocket implements LiveSocket {
       },
     }
     const result = await this.send(to, content, options.metadata)
-    this.remember(content, to, result?.key?.id, options.metadata?.id as string | undefined)
+    this.remember(content, to, result?.key?.id, this.messageId(options.metadata))
+    return { id: this.resultId(result, options.metadata) }
+  }
 
-    return { id: result?.key?.id ?? `unknown-${Date.now()}` }
+  async sendListMessage(
+    to: string,
+    content: ListMessageContent,
+    options: AdvancedInteractiveOptions = {},
+  ): Promise<{ id: string }> {
+    const messageId = this.messageId(options.metadata)
+    const result = await this.withTimeout(sendClassicList(this.interactiveSocket(), to, {
+      title: content.title,
+      text: content.text,
+      footer: content.footer,
+      buttonText: content.buttonText,
+      sections: content.sections ?? [],
+      listType: content.listType,
+      quoted: content.quoted ?? options.quoted,
+      fallbackText: content.fallbackText ?? options.fallbackText,
+      contextInfo: content.contextInfo ?? options.contextInfo,
+    }, { quoted: content.quoted ?? options.quoted, mdPatch: options.mdPatch, messageId }, this.interactiveDeps()), 'relayMessage')
+    this.rememberInteractive(result, to, options.metadata)
+    return { id: this.resultId(result, options.metadata) }
+  }
+
+  async sendTemplateButtons(
+    to: string,
+    content: TemplateButtonsContent,
+    options: AdvancedInteractiveOptions = {},
+  ): Promise<{ id: string }> {
+    const messageId = this.messageId(options.metadata)
+    const result = await this.withTimeout(sendInteractiveTemplateButtons(this.interactiveSocket(), to, {
+      text: content.text,
+      footer: content.footer,
+      buttons: content.buttons ?? [],
+      quoted: content.quoted ?? options.quoted,
+      fallbackText: content.fallbackText ?? options.fallbackText,
+      contextInfo: content.contextInfo ?? options.contextInfo,
+    }, { quoted: content.quoted ?? options.quoted, mdPatch: options.mdPatch, messageId }, this.interactiveDeps()), 'relayMessage')
+    this.rememberInteractive(result, to, options.metadata)
+    return { id: this.resultId(result, options.metadata) }
+  }
+
+  async sendInteractiveMessage(
+    to: string,
+    content: Record<string, unknown>,
+    options: RawInteractiveOptions = {},
+  ): Promise<{ id: string }> {
+    const messageId = this.messageId(options.metadata)
+    const result = await this.withTimeout(relayRawInteractive(this.interactiveSocket(), to, content, {
+      quoted: options.quoted,
+      mdPatch: options.mdPatch,
+      additionalNodes: options.additionalNodes,
+      messageId,
+    }, this.interactiveDeps()), 'relayMessage')
+    this.rememberInteractive(result, to, options.metadata)
+    return { id: this.resultId(result, options.metadata) }
   }
 
   isHealthy(): boolean {

@@ -12,6 +12,28 @@ export { Emitter } from './core/emitter.js'
 export type { Listener } from './core/emitter.js'
 export { createLogger, noopLogger } from './core/logger.js'
 export type { LogLevel, LoggerOptions } from './core/logger.js'
+/** Módulo interactivo avanzado (native flow, listas, carruseles y flows). */
+export * as interactive from './core/interactive.js'
+export {
+  button,
+  getInteractiveReply,
+  normalizeButton,
+  normalizeButtons,
+  buildMessageParams,
+  interactiveNodes,
+  prepareHeader,
+  relayInteractive,
+  sendInteractiveMessage,
+  sendButtons as sendNativeButtons,
+  sendList,
+  sendListMessage,
+  sendTemplateButtons,
+  sendCarousel as sendNativeCarousel,
+  MAX_BUTTONS,
+  MAX_MULTI_BUTTONS,
+  MAX_CAROUSEL_CARDS,
+} from './core/interactive.js'
+export type * from './core/interactive.js'
 export { createMessageStore, createRetryCache } from './core/message-store.js'
 export type { MessageStoreOptions } from './core/message-store.js'
 export { toMillis } from './core/time.js'
