@@ -8,19 +8,27 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./baileys": {
       "types": "./dist/adapters/baileys-adapter.d.ts",
-      "import": "./dist/adapters/baileys-adapter.js"
+      "import": "./dist/adapters/baileys-adapter.js",
+      "require": "./dist/adapters/baileys-adapter.js",
+      "default": "./dist/adapters/baileys-adapter.js"
     },
     "./upstream": {
       "types": "./dist/upstream.d.ts",
-      "import": "./dist/upstream.js"
+      "import": "./dist/upstream.js",
+      "require": "./dist/upstream.js",
+      "default": "./dist/upstream.js"
     },
     "./mock": {
       "types": "./dist/adapters/mock-adapter.d.ts",
-      "import": "./dist/adapters/mock-adapter.js"
+      "import": "./dist/adapters/mock-adapter.js",
+      "require": "./dist/adapters/mock-adapter.js",
+      "default": "./dist/adapters/mock-adapter.js"
     }
   },
   "files": [
@@ -37,13 +45,8 @@
     "demo:real": "npm run build && node examples/real-bot.mjs",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
-  "peerDependencies": {
-    "@whiskeysockets/baileys": ">=7.0.0-rc.14 <8"
-  },
-  "peerDependenciesMeta": {
-    "@whiskeysockets/baileys": {
-      "optional": true
-    }
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

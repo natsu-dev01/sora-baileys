@@ -1,6 +1,6 @@
 # @sora/baileys
 
-Cliente de WhatsApp Web propio, tipado y **orientado a resiliencia**. No es un copia/pega de Baileys: es una capa nueva con una máquina de estados, backoff con jitter, heartbeat, cola de envío y persistencia atómica. El transporte real se inyecta mediante un adaptador; el incluido usa `@whiskeysockets/baileys` como peer **opcional**.
+Cliente de WhatsApp Web propio, tipado y **orientado a resiliencia**. No es un copia/pega de Baileys: es una capa nueva con una máquina de estados, backoff con jitter, heartbeat, cola de envío y persistencia atómica. El transporte real se inyecta mediante un adaptador; el incluido usa `@whiskeysockets/baileys` como dependencia.
 
 > Proyecto no oficial. Úsalo responsablemente y respeta los términos de WhatsApp.
 
@@ -40,12 +40,12 @@ Si además necesitas las primitivas del transporte, están re-exportadas en un s
 import makeWASocket, { proto, Browsers, DisconnectReason } from '@sora/baileys/upstream'
 ```
 
-`upstream` requiere que `@whiskeysockets/baileys` esté instalado en tu proyecto; el entry principal no.
+`@whiskeysockets/baileys` se instala automáticamente como dependencia, así que no hace falta declararlo en tu bot. `require()` y `import` funcionan en los cuatro subpaths.
 
 También puedes fijar un commit concreto:
 
 ```bash
-npm install github:natsu-dev01/sora-baileys#06858d7
+npm install github:natsu-dev01/sora-baileys#<commit>
 ```
 
 ## Inicio rápido (con transporte real)
