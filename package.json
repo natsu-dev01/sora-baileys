@@ -1,0 +1,58 @@
+{
+  "name": "@sora/baileys",
+  "version": "0.1.0",
+  "description": "Cliente WhatsApp Web propio, resiliente y tipado, con arquitectura de adaptadores.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./baileys": {
+      "types": "./dist/adapters/baileys-adapter.d.ts",
+      "import": "./dist/adapters/baileys-adapter.js"
+    },
+    "./mock": {
+      "types": "./dist/adapters/mock-adapter.d.ts",
+      "import": "./dist/adapters/mock-adapter.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "demo:mock": "npm run build && node examples/mock-demo.mjs",
+    "demo:cli": "npm run build && node examples/cli-bot.mjs",
+    "demo:real": "npm run build && node examples/real-bot.mjs",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "peerDependencies": {
+    "@whiskeysockets/baileys": ">=7.0.0-rc.14 <8"
+  },
+  "peerDependenciesMeta": {
+    "@whiskeysockets/baileys": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "whatsapp",
+    "baileys",
+    "whatsapp-web",
+    "websocket",
+    "reconnect"
+  ],
+  "license": "MIT"
+}
