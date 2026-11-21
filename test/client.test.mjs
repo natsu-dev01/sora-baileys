@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { BaileysClient, MockAdapter } from '../dist/index.js'
+import { BaileysClient, MockAdapter, createMessageStore } from '../dist/index.js'
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const fastOptions = {
@@ -237,4 +237,99 @@ test('el heartbeat fuerza reconexión cuando el socket está unhealthy', async (
 
   assert.equal(client.status.state, 'reconnecting')
   await client.stop()
+})
+
+test('pide reenvío de placeholders y no los emite como mensajes normales', async () => {
+  const adapter = new MockAdapter({ connectDelayMs: 5, qrOnFresh: false })
+  adapter.markLinked()
+  const client = new BaileysClient({
+    ...fastOptions,
+    adapter,
+    sessionDir: 'linked-placeholder-test',
+  })
+
+  const connected = client.waitForEvent('connected')
+  await client.start()
+  await connected
+
+  let normalMessages = 0
+  client.on('message', () => { normalMessages += 1 })
+  const unavailable = client.waitForEvent('messageUnavailable', 2000)
+
+  adapter.pushUnavailableMessage({ id: 'placeholder-1' })
+  const event = await unavailable
+  assert.equal(event.id, 'placeholder-1')
+  assert.equal(event.unavailable, true)
+  assert.equal(event.unavailableReason, 'Message absent from node')
+
+  await delay(20)
+  assert.equal(normalMessages, 0)
+  assert.equal(adapter.resendRequests.length, 1)
+  assert.equal(adapter.resendRequests[0].key.id, 'placeholder-1')
+  assert.equal(adapter.resendRequests[0].key.remoteJid, '1234567890@s.whatsapp.net')
+
+  // El contenido real llega después del reenvío y sí se entrega al bot.
+  const real = client.waitForEvent('message', 2000, (m) => m.id === 'placeholder-1')
+  adapter.pushMessage({ id: 'placeholder-1', text: 'ya descifrado' })
+  assert.equal((await real).text, 'ya descifrado')
+  assert.equal(normalMessages, 1)
+
+  await client.stop()
+})
+
+test('expone el store de mensajes y reenvía la configuración de reintentos', async () => {
+  class CapturingAdapter extends MockAdapter {
+    constructor() {
+      super({ connectDelayMs: 5, qrOnFresh: false })
+      this.lastConnect = undefined
+    }
+    async connect(options) {
+      this.lastConnect = options
+      return super.connect(options)
+    }
+  }
+
+  const adapter = new CapturingAdapter()
+  adapter.markLinked()
+  const messageStore = createMessageStore()
+  const client = new BaileysClient({
+    ...fastOptions,
+    adapter,
+    sessionDir: 'linked-retry-options-test',
+    retry: {
+      messageStore,
+      maxMsgRetryCount: 9,
+      retryRequestDelayMs: 40,
+      enableAutoSessionRecreation: false,
+    },
+  })
+
+  const connected = client.waitForEvent('connected')
+  await client.start()
+  await connected
+
+  assert.equal(client.storedMessages, messageStore)
+  assert.equal(adapter.lastConnect.messageStore, messageStore)
+  assert.equal(adapter.lastConnect.retry.maxMsgRetryCount, 9)
+  assert.equal(adapter.lastConnect.retry.retryRequestDelayMs, 40)
+  assert.equal(adapter.lastConnect.retry.enableAutoSessionRecreation, false)
+
+  await client.stop()
+})
+
+test('el store recuerda mensajes para reintentos y respeta límites', () => {
+  const store = createMessageStore({ maxMessages: 2 })
+  store.remember({ id: 'a', remoteJid: '1@s.whatsapp.net' }, { text: 'A' })
+  store.remember({ id: 'b', remoteJid: '1@s.whatsapp.net' }, { text: 'B' })
+  store.remember({ id: 'c', remoteJid: '1@s.whatsapp.net' }, { text: 'C' })
+
+  assert.equal(store.size, 2)
+  assert.equal(store.get({ id: 'a' }), undefined)
+  assert.deepEqual(store.get({ id: 'c' }), { text: 'C' })
+  assert.equal(store.get({ id: 'c', remoteJid: 'otro@s.whatsapp.net' }), undefined)
+
+  store.forget('c')
+  assert.equal(store.get({ id: 'c' }), undefined)
+  store.clear()
+  assert.equal(store.size, 0)
 })

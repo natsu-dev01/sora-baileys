@@ -1,3 +1,4 @@
+import { createRetryCache } from '../core/message-store.js'
 import type {
   AuthSession,
   ButtonMessageOptions,
@@ -8,6 +9,8 @@ import type {
   InteractiveButton,
   LiveSocket,
   LoggerLike,
+  MessageKey,
+  MessageStore,
   QuickReplyButton,
   SocketAdapter,
 } from '../types.js'
@@ -45,6 +48,10 @@ interface BaileysSocket {
     key?: { id?: string }
   } | undefined>
   requestPairingCode?: (phoneNumber: string) => Promise<string>
+  requestPlaceholderResend?: (
+    key: Record<string, unknown>,
+    data?: Record<string, unknown>,
+  ) => Promise<string | undefined>
   end?: (error?: unknown) => void
   authState?: { creds?: { registered?: boolean } }
   ws?: { readyState?: number }
@@ -93,10 +100,23 @@ export class BaileysAdapter implements SocketAdapter {
     const mod = await loadBaileysModule(options.logger)
     const auth = options.auth.snapshot as Record<string, unknown> | undefined
 
+    const retry = options.retry ?? {}
+    const messageStore = options.messageStore
     const socket = mod.makeWASocket({
       auth,
       printQRInTerminal: false,
       browser: mod.Browsers.ubuntu(options.appName ?? 'Sora Baileys'),
+      retryRequestDelayMs: retry.retryRequestDelayMs ?? 250,
+      maxMsgRetryCount: retry.maxMsgRetryCount ?? 5,
+      enableAutoSessionRecreation: retry.enableAutoSessionRecreation ?? true,
+      enableRecentMessageCache: retry.enableRecentMessageCache ?? true,
+      msgRetryCounterCache: options.retryCache ?? createRetryCache(),
+      // Baileys invoca este callback cuando el móvil pide reenviar un mensaje
+      // que no pudo descifrar. Sin él aparece el placeholder en el chat.
+      getMessage: async (key: Record<string, unknown>) => {
+        const content = await messageStore?.get(key as MessageKey)
+        return content ?? undefined
+      },
       ...options.socketOptions,
     })
 
@@ -143,7 +163,7 @@ export class BaileysAdapter implements SocketAdapter {
       }
     }
 
-    return new BaileysLiveSocket(socket)
+    return new BaileysLiveSocket(socket, messageStore)
   }
 }
 
@@ -193,6 +213,21 @@ function normalizeMessage(message: Record<string, unknown>): import('../types.js
   const interactiveId = nativeParams?.id ?? nativeParams?.text
   const interactiveText = nativeParams?.display_text ?? content.interactiveResponseMessage?.body?.text
 
+  const rawStub = message.messageStubType
+  const stubType = typeof rawStub === 'number'
+    ? rawStub
+    : rawStub === 'CIPHERTEXT' ? 2 : rawStub === 'FUTUREPROOF' ? 3 : 0
+  const stubParams = (Array.isArray(message.messageStubParameters) ? message.messageStubParameters : [])
+    .map((param) => String(param))
+  const missingContent = stubParams.some((param) =>
+    param === 'Message absent from node' || param === 'Key used already or never filled',
+  )
+  // 2 = CIPHERTEXT, 3 = FUTUREPROOF en el enum de WhatsApp.
+  const unavailable = stubType === 2 || stubType === 3 || missingContent
+  const unavailableReason = missingContent
+    ? stubParams.find((param) => param === 'Message absent from node' || param === 'Key used already or never filled')
+    : stubType === 2 ? 'CIPHERTEXT' : stubType === 3 ? 'FUTUREPROOF' : undefined
+
   const remoteJid = key.remoteJid ?? ''
   const rawTimestamp = message.messageTimestamp
   const timestamp = typeof rawTimestamp === 'number'
@@ -205,8 +240,10 @@ function normalizeMessage(message: Record<string, unknown>): import('../types.js
     text: content.conversation ?? content.extendedTextMessage?.text ?? buttonText ?? interactiveText ?? '',
     timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
     groupId: remoteJid.endsWith('@g.us') ? remoteJid : undefined,
-    buttonId: buttonId ?? interactiveId,
-    buttonText: buttonText ?? interactiveText,
+    buttonId: unavailable ? undefined : buttonId ?? interactiveId,
+    buttonText: unavailable ? undefined : buttonText ?? interactiveText,
+    unavailable: unavailable || undefined,
+    unavailableReason,
     raw: message,
   }
 }
@@ -242,10 +279,52 @@ function parseJson<T>(raw: string | undefined): T | undefined {
 }
 
 class BaileysLiveSocket implements LiveSocket {
-  constructor(private readonly socket: BaileysSocket) {}
+  constructor(
+    private readonly socket: BaileysSocket,
+    private readonly store?: MessageStore,
+  ) {}
+
+  /** Guarda el contenido exacto que Baileys cifró para poder reenviarlo tras un retry. */
+  private remember(
+    content: Record<string, unknown>,
+    remoteJid: string,
+    resultId?: string,
+    localId?: string,
+  ): void {
+    if (!this.store) return
+    const ids = new Set<string>()
+    if (resultId) ids.add(resultId)
+    if (localId) ids.add(localId)
+    for (const id of ids) {
+      this.store.remember({ id, remoteJid, fromMe: true }, content)
+    }
+  }
+
+  async requestMessageResend(key: MessageKey, raw?: unknown): Promise<void> {
+    const request = this.socket.requestPlaceholderResend
+    if (!request) return
+    const message = (raw ?? {}) as {
+      key?: Record<string, unknown>
+      messageTimestamp?: unknown
+      pushName?: string
+    }
+    const fullKey = {
+      remoteJid: key.remoteJid,
+      id: key.id,
+      fromMe: key.fromMe,
+      participant: key.participant,
+    }
+    await request(fullKey, {
+      key: message.key ?? fullKey,
+      ...(message.messageTimestamp !== undefined ? { messageTimestamp: message.messageTimestamp } : {}),
+      ...(message.pushName ? { pushName: message.pushName } : {}),
+    })
+  }
 
   async sendText(to: string, text: string, metadata?: Record<string, unknown>): Promise<{ id: string }> {
-    const result = await this.socket.sendMessage(to, { text }, metadata)
+    const content: Record<string, unknown> = { text }
+    const result = await this.socket.sendMessage(to, content, metadata)
+    this.remember(content, to, result?.key?.id, metadata?.id as string | undefined)
     return { id: result?.key?.id ?? `unknown-${Date.now()}` }
   }
 
@@ -256,7 +335,7 @@ class BaileysLiveSocket implements LiveSocket {
     options: ButtonMessageOptions = {},
   ): Promise<{ id: string }> {
     const hasHeader = Boolean(options.header)
-    const result = await this.socket.sendMessage(to, {
+    const content: Record<string, unknown> = {
       buttonsMessage: {
         contentText: text,
         ...(hasHeader ? { text: options.header, headerType: 2 } : { headerType: 1 }),
@@ -267,7 +346,9 @@ class BaileysLiveSocket implements LiveSocket {
           type: 1,
         })),
       },
-    }, options.metadata)
+    }
+    const result = await this.socket.sendMessage(to, content, options.metadata)
+    this.remember(content, to, result?.key?.id, options.metadata?.id as string | undefined)
 
     return { id: result?.key?.id ?? `unknown-${Date.now()}` }
   }
@@ -278,7 +359,7 @@ class BaileysLiveSocket implements LiveSocket {
     buttons: InteractiveButton[],
     options: ButtonMessageOptions = {},
   ): Promise<{ id: string }> {
-    const result = await this.socket.sendMessage(to, {
+    const content: Record<string, unknown> = {
       interactiveMessage: {
         body: { text },
         ...(options.header ? { header: { title: options.header } } : {}),
@@ -288,7 +369,9 @@ class BaileysLiveSocket implements LiveSocket {
           messageVersion: 3,
         },
       },
-    }, options.metadata)
+    }
+    const result = await this.socket.sendMessage(to, content, options.metadata)
+    this.remember(content, to, result?.key?.id, options.metadata?.id as string | undefined)
 
     return { id: result?.key?.id ?? `unknown-${Date.now()}` }
   }
@@ -298,7 +381,7 @@ class BaileysLiveSocket implements LiveSocket {
     cards: CarouselCard[],
     options: CarouselOptions = {},
   ): Promise<{ id: string }> {
-    const result = await this.socket.sendMessage(to, {
+    const content: Record<string, unknown> = {
       interactiveMessage: {
         body: { text: options.header ?? cards[0]?.text ?? '' },
         ...(options.footer ? { footer: { text: options.footer } } : {}),
@@ -325,7 +408,9 @@ class BaileysLiveSocket implements LiveSocket {
           carouselCardType: 1,
         },
       },
-    }, options.metadata)
+    }
+    const result = await this.socket.sendMessage(to, content, options.metadata)
+    this.remember(content, to, result?.key?.id, options.metadata?.id as string | undefined)
 
     return { id: result?.key?.id ?? `unknown-${Date.now()}` }
   }

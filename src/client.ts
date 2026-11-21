@@ -2,6 +2,7 @@ import { BaileysAdapter } from './adapters/baileys-adapter.js'
 import { backoffDelay } from './core/backoff.js'
 import { Emitter } from './core/emitter.js'
 import { createLogger } from './core/logger.js'
+import { createMessageStore, createRetryCache } from './core/message-store.js'
 import { RetryQueue } from './core/queue.js'
 import type {
   AuthSession,
@@ -17,10 +18,13 @@ import type {
   InteractiveButton,
   ConnectionState,
   LiveSocket,
+  MessageKey,
+  MessageStore,
   NormalizedMessage,
   OutboundKind,
   OutboundMessage,
   QuickReplyButton,
+  RetryCache,
   SocketAdapter,
   SocketAdapterEvents,
 } from './types.js'
@@ -39,6 +43,7 @@ interface ResolvedOptions {
   reconnectOnBanned: boolean
   queue: NonNullable<ClientOptions['queue']>
   socketOptions: Record<string, unknown>
+  retry: NonNullable<ClientOptions['retry']>
 }
 
 let messageSequence = 0
@@ -54,6 +59,8 @@ export class BaileysClient {
   private readonly adapter: SocketAdapter
   private readonly events: Emitter<ClientEvents>
   private readonly queue: RetryQueue<OutboundMessage>
+  private readonly messageStore: MessageStore
+  private readonly retryCache: RetryCache
   private readonly stats: ClientStats = {
     reconnects: 0,
     messagesSent: 0,
@@ -86,6 +93,12 @@ export class BaileysClient {
       this.logger.error('event listener failed', { event, error })
     })
 
+    this.messageStore = options.retry?.messageStore ?? createMessageStore({
+      ttlMs: options.retry?.messageTtlMs,
+      maxMessages: options.retry?.maxRememberedMessages,
+    }, this.logger)
+    this.retryCache = options.retry?.retryCache ?? createRetryCache()
+
     this.queue = new RetryQueue<OutboundMessage>({
       ...this.opts.queue,
       logger: this.logger,
@@ -114,6 +127,27 @@ export class BaileysClient {
 
   get sessionDir(): string {
     return this.opts.sessionDir
+  }
+
+  /** Store de mensajes salientes usado por Baileys para responder reenvíos. */
+  get storedMessages(): MessageStore {
+    return this.messageStore
+  }
+
+  /**
+   * Solicita manualmente el reenvío de un mensaje indescifrable.
+   * Útil si quieres reintentar después de un evento `messageUnavailable`.
+   */
+  async requestResend(key: MessageKey, raw?: unknown): Promise<boolean> {
+    const socket = this.socket
+    if (!socket?.requestMessageResend) return false
+    try {
+      await socket.requestMessageResend(key, raw)
+      return true
+    } catch (error) {
+      this.events.emit('error', { where: 'requestMessageResend', error })
+      return false
+    }
   }
 
   on<K extends keyof ClientEvents>(event: K, listener: (payload: ClientEvents[K]) => void): () => void {
@@ -411,6 +445,9 @@ export class BaileysClient {
         printQR: this.opts.printQR,
         appName: this.opts.appName,
         socketOptions: this.opts.socketOptions,
+        retry: this.opts.retry,
+        messageStore: this.messageStore,
+        retryCache: this.retryCache,
         logger: this.logger,
         onEvent: (event, payload) => this.handleAdapterEvent(gen, event, payload),
       })
@@ -473,6 +510,17 @@ export class BaileysClient {
       case 'message': {
         const message = payload as NormalizedMessage
         this.lastActivityAt = message.timestamp
+        if (message.unavailable) {
+          // Placeholder de WhatsApp: no lo tratamos como texto ni disparamos botones.
+          // Pedimos el contenido real al teléfono y avisamos por un evento aparte.
+          this.logger.debug('message unavailable, requesting resend', {
+            id: message.id,
+            reason: message.unavailableReason,
+          })
+          this.events.emit('messageUnavailable', message)
+          void this.requestResend({ id: message.id, remoteJid: message.from }, message.raw)
+          break
+        }
         this.events.emit('message', message)
         if (message.buttonId) {
           this.events.emit('button', { ...message, buttonId: message.buttonId } as ButtonReply)
@@ -775,5 +823,6 @@ function resolveOptions(options: ClientOptions): ResolvedOptions {
     reconnectOnBanned: options.reconnectOnBanned ?? false,
     queue: options.queue ?? {},
     socketOptions: options.socketOptions ?? {},
+    retry: options.retry ?? {},
   }
 }

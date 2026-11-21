@@ -7,6 +7,7 @@ import type {
   ConnectAdapterOptions,
   InteractiveButton,
   LiveSocket,
+  MessageKey,
   NormalizedMessage,
   QuickReplyButton,
   SocketAdapter,
@@ -90,7 +91,32 @@ export class MockAdapter implements SocketAdapter {
       groupId: message.groupId,
       buttonId: message.buttonId,
       buttonText: message.buttonText,
+      unavailable: message.unavailable,
+      unavailableReason: message.unavailableReason,
       raw: message.raw,
+    })
+  }
+
+  /** Inyecta un placeholder indescifrable (como el CIPHERTEXT de Baileys). */
+  pushUnavailableMessage(options: {
+    id?: string
+    from?: string
+    reason?: string
+  } = {}): void {
+    const id = options.id ?? `mock-placeholder-${++counter}`
+    const from = options.from ?? '1234567890@s.whatsapp.net'
+    const reason = options.reason ?? 'Message absent from node'
+    this.pushMessage({
+      id,
+      from,
+      text: 'No se pudo cargar este mensaje',
+      unavailable: true,
+      unavailableReason: reason,
+      raw: {
+        key: { id, remoteJid: from },
+        messageStubType: 2,
+        messageStubParameters: [reason],
+      },
     })
   }
 
@@ -144,6 +170,11 @@ export class MockAdapter implements SocketAdapter {
     return this.current?.sentCarousels ?? []
   }
 
+  /** Reenvíos solicitados en el socket activo. */
+  get resendRequests(): Array<{ key: MessageKey; raw?: unknown }> {
+    return this.current?.resendRequests ?? []
+  }
+
   async connect(options: ConnectAdapterOptions): Promise<LiveSocket> {
     const emit: Emit = options.onEvent
 
@@ -192,6 +223,7 @@ class MockSocket implements LiveSocket {
   readonly sentButtons: Array<{ to: string; text: string; buttons: QuickReplyButton[] }> = []
   readonly sentInteractive: Array<{ to: string; text: string; buttons: InteractiveButton[] }> = []
   readonly sentCarousels: Array<{ to: string; cards: CarouselCard[] }> = []
+  readonly resendRequests: Array<{ key: MessageKey; raw?: unknown }> = []
 
   constructor(private readonly opts: MockSocketOptions) {}
 
@@ -238,6 +270,11 @@ class MockSocket implements LiveSocket {
     if (this.opts.shouldFail()) throw new Error('mock send failure')
     this.sentCarousels.push({ to, cards })
     return { id: `mock-carousel-${++counter}` }
+  }
+
+  async requestMessageResend(key: MessageKey, raw?: unknown): Promise<void> {
+    if (this.closed) throw new Error('socket closed')
+    this.resendRequests.push({ key, raw })
   }
 
   isHealthy(): boolean {

@@ -36,6 +36,51 @@ export interface LoggerLike {
   error(message: string, meta?: unknown): void
 }
 
+/** Clave con la que Baileys identifica un mensaje para reintentar su entrega. */
+export interface MessageKey {
+  id?: string
+  remoteJid?: string
+  participant?: string
+  fromMe?: boolean
+}
+
+/** Contenido de un mensaje saliente guardado para poder reenviarlo. */
+export interface MessageStore {
+  remember(key: MessageKey, content: Record<string, unknown>): void
+  get(key: MessageKey): Promise<Record<string, unknown> | undefined> | Record<string, unknown> | undefined
+  forget(id: string): void
+  clear(): void
+  readonly size: number
+}
+
+/** Caché compatible con `CacheStore` de Baileys. */
+export interface RetryCache {
+  get<T>(key: string): T | undefined
+  set<T>(key: string, value: T): void
+  del(key: string): void
+  flushAll(): void
+}
+
+/** Ajustes para reintentar el descifrado y el reenvío de mensajes. */
+export interface MessageRetryOptions {
+  /** Retardo entre reintentos de descifrado en ms. Por defecto 250. */
+  retryRequestDelayMs?: number
+  /** Máximo de reintentos por mensaje. Por defecto 5. */
+  maxMsgRetryCount?: number
+  /** Recrear la sesión de cifrado cuando falla. Por defecto true. */
+  enableAutoSessionRecreation?: boolean
+  /** Cachear mensajes recientes para responder reenvíos. Por defecto true. */
+  enableRecentMessageCache?: boolean
+  /** Tiempo de vida de los mensajes recordados en ms. Por defecto 1 hora. */
+  messageTtlMs?: number
+  /** Máximo de mensajes recordados. Por defecto 1000. */
+  maxRememberedMessages?: number
+  /** Store propio de mensajes salientes. Por defecto se crea uno en memoria. */
+  messageStore?: MessageStore
+  /** Caché propia de contadores de reintento. */
+  retryCache?: RetryCache
+}
+
 export interface QueueOptions {
   /** Número máximo de mensajes en cola. Por defecto 1000. */
   maxSize?: number
@@ -103,6 +148,10 @@ export interface NormalizedMessage {
   groupId?: string
   buttonId?: string
   buttonText?: string
+  /** true si WhatsApp no pudo descifrar el mensaje y mostró el placeholder. */
+  unavailable?: boolean
+  /** Detalle del stub (CIPHERTEXT, mensaje ausente, etc.). */
+  unavailableReason?: string
   raw?: unknown
 }
 
@@ -135,6 +184,8 @@ export interface ClientEvents {
   qr: { raw: string }
   pairingCode: { code: string }
   message: NormalizedMessage
+  /** Mensaje indescifrable; el cliente ya solicitó su reenvío al teléfono. */
+  messageUnavailable: NormalizedMessage
   button: ButtonReply
   sent: { id: string; to: string; kind?: OutboundKind }
   queued: { id: string; size: number }
@@ -170,6 +221,8 @@ export interface ClientOptions {
   adapter?: SocketAdapter
   /** Opciones crudas que se pasan al socket del adaptador. */
   socketOptions?: Record<string, unknown>
+  /** Reintentos de descifrado/reenvío. Por defecto activados. */
+  retry?: MessageRetryOptions
 }
 
 /** Eventos que un adaptador puede emitir hacia el cliente. */
@@ -217,6 +270,8 @@ export interface LiveSocket {
   isHealthy?(): boolean | Promise<boolean>
   disconnect?(): Promise<void>
   requestPairingCode?(phoneNumber: string): Promise<string>
+  /** Pide al teléfono vinculado que reenvíe el contenido de un placeholder. */
+  requestMessageResend?(key: MessageKey, raw?: unknown): Promise<void>
 }
 
 export interface ConnectAdapterOptions {
@@ -225,6 +280,9 @@ export interface ConnectAdapterOptions {
   printQR?: boolean
   appName?: string
   socketOptions?: Record<string, unknown>
+  retry?: MessageRetryOptions
+  messageStore?: MessageStore
+  retryCache?: RetryCache
   logger?: LoggerLike
   onEvent: <K extends keyof SocketAdapterEvents>(event: K, payload: SocketAdapterEvents[K]) => void
 }
