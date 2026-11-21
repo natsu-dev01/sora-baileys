@@ -47,12 +47,6 @@ cd sora-baileys
 npm install
 ```
 
-El núcleo no necesita Baileys. Para conectar de verdad añade el peer opcional:
-
-```bash
-npm install @whiskeysockets/baileys
-```
-
 ## Inicio rápido (con transporte real)
 
 ```js
