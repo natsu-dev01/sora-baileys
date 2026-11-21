@@ -1,8 +1,11 @@
 import type {
   AuthSession,
   ButtonMessageOptions,
+  CarouselCard,
+  CarouselOptions,
   CloseReason,
   ConnectAdapterOptions,
+  InteractiveButton,
   LiveSocket,
   LoggerLike,
   QuickReplyButton,
@@ -174,12 +177,22 @@ function normalizeMessage(message: Record<string, unknown>): import('../types.js
     extendedTextMessage?: { text?: string }
     buttonsResponseMessage?: { selectedButtonId?: string; selectedDisplayText?: string }
     templateButtonReplyMessage?: { selectedId?: string; selectedDisplayText?: string }
+    interactiveResponseMessage?: {
+      nativeFlowResponseMessage?: { name?: string; paramsJson?: string }
+      body?: { text?: string }
+    }
   }
   const buttonReply = (content.buttonsResponseMessage ?? content.templateButtonReplyMessage) as
     | { selectedButtonId?: string; selectedId?: string; selectedDisplayText?: string }
     | undefined
   const buttonId = buttonReply?.selectedButtonId ?? buttonReply?.selectedId
   const buttonText = buttonReply?.selectedDisplayText
+
+  const nativeFlow = content.interactiveResponseMessage?.nativeFlowResponseMessage
+  const nativeParams = parseJson<{ id?: string; display_text?: string; text?: string }>(nativeFlow?.paramsJson)
+  const interactiveId = nativeParams?.id ?? nativeParams?.text
+  const interactiveText = nativeParams?.display_text ?? content.interactiveResponseMessage?.body?.text
+
   const remoteJid = key.remoteJid ?? ''
   const rawTimestamp = message.messageTimestamp
   const timestamp = typeof rawTimestamp === 'number'
@@ -189,12 +202,42 @@ function normalizeMessage(message: Record<string, unknown>): import('../types.js
   return {
     id: key.id ?? `unknown-${Date.now()}`,
     from: remoteJid,
-    text: content.conversation ?? content.extendedTextMessage?.text ?? buttonText ?? '',
+    text: content.conversation ?? content.extendedTextMessage?.text ?? buttonText ?? interactiveText ?? '',
     timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
     groupId: remoteJid.endsWith('@g.us') ? remoteJid : undefined,
-    buttonId,
-    buttonText,
+    buttonId: buttonId ?? interactiveId,
+    buttonText: buttonText ?? interactiveText,
     raw: message,
+  }
+}
+
+function toNativeFlowButtons(buttons: InteractiveButton[]): Array<{ name: string; buttonParamsJson: string }> {
+  return buttons.map((button) => {
+    if (button.url) {
+      return {
+        name: 'url',
+        buttonParamsJson: JSON.stringify({ display_text: button.label, url: button.url }),
+      }
+    }
+    if (button.phoneNumber) {
+      return {
+        name: 'call',
+        buttonParamsJson: JSON.stringify({ display_text: button.label, phone_number: button.phoneNumber }),
+      }
+    }
+    return {
+      name: 'quick_reply',
+      buttonParamsJson: JSON.stringify({ display_text: button.label, id: button.id ?? button.label }),
+    }
+  })
+}
+
+function parseJson<T>(raw: string | undefined): T | undefined {
+  if (!raw) return undefined
+  try {
+    return JSON.parse(raw) as T
+  } catch {
+    return undefined
   }
 }
 
@@ -223,6 +266,64 @@ class BaileysLiveSocket implements LiveSocket {
           buttonText: { displayText: button.label },
           type: 1,
         })),
+      },
+    }, options.metadata)
+
+    return { id: result?.key?.id ?? `unknown-${Date.now()}` }
+  }
+
+  async sendInteractive(
+    to: string,
+    text: string,
+    buttons: InteractiveButton[],
+    options: ButtonMessageOptions = {},
+  ): Promise<{ id: string }> {
+    const result = await this.socket.sendMessage(to, {
+      interactiveMessage: {
+        body: { text },
+        ...(options.header ? { header: { title: options.header } } : {}),
+        ...(options.footer ? { footer: { text: options.footer } } : {}),
+        nativeFlowMessage: {
+          buttons: toNativeFlowButtons(buttons),
+          messageVersion: 3,
+        },
+      },
+    }, options.metadata)
+
+    return { id: result?.key?.id ?? `unknown-${Date.now()}` }
+  }
+
+  async sendCarousel(
+    to: string,
+    cards: CarouselCard[],
+    options: CarouselOptions = {},
+  ): Promise<{ id: string }> {
+    const result = await this.socket.sendMessage(to, {
+      interactiveMessage: {
+        body: { text: options.header ?? cards[0]?.text ?? '' },
+        ...(options.footer ? { footer: { text: options.footer } } : {}),
+        carouselMessage: {
+          cards: cards.map((card) => ({
+            ...(card.title || card.subtitle
+              ? { header: { title: card.title ?? '', subtitle: card.subtitle ?? '', hasMediaAttachment: false } }
+              : {}),
+            body: { text: card.text },
+            ...(card.footer ? { footer: { text: card.footer } } : {}),
+            ...(card.buttons && card.buttons.length > 0
+              ? {
+                  nativeFlowMessage: {
+                    buttons: card.buttons.map((button) => ({
+                      name: 'quick_reply',
+                      buttonParamsJson: JSON.stringify({ display_text: button.label, id: button.id }),
+                    })),
+                    messageVersion: 3,
+                  },
+                }
+              : {}),
+          })),
+          messageVersion: 1,
+          carouselCardType: 1,
+        },
       },
     }, options.metadata)
 

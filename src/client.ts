@@ -7,14 +7,18 @@ import type {
   AuthSession,
   ButtonMessageOptions,
   ButtonReply,
+  CarouselCard,
+  CarouselOptions,
   ClientEvents,
   ClientOptions,
   ClientStats,
   ClientStatus,
   CloseReason,
+  InteractiveButton,
   ConnectionState,
   LiveSocket,
   NormalizedMessage,
+  OutboundKind,
   OutboundMessage,
   QuickReplyButton,
   SocketAdapter,
@@ -88,14 +92,12 @@ export class BaileysClient {
       onSend: async (payload) => {
         const socket = this.socket
         if (!socket || this.state !== 'connected') throw new Error('socket not ready')
-        const result = payload.buttons
-          ? await this.sendButtonsThrough(socket, payload)
-          : await socket.sendText(payload.to, payload.text, payload.metadata)
+        const result = await this.dispatchOutbound(socket, payload)
         this.stats.messagesSent += 1
         this.events.emit('sent', {
           id: result.id,
           to: payload.to,
-          kind: payload.buttons ? 'buttons' : 'text',
+          kind: payload.kind ?? 'text',
         })
       },
     })
@@ -185,7 +187,7 @@ export class BaileysClient {
       }
     }
 
-    const queuedId = this.queue.enqueue({ to, text, id, metadata }, id)
+    const queuedId = this.queue.enqueue({ to, text, id, kind: 'text', metadata }, id)
     this.events.emit('queued', { id: queuedId, size: this.queue.size })
     return { id: queuedId, queued: true }
   }
@@ -206,6 +208,7 @@ export class BaileysClient {
       to,
       text,
       id,
+      kind: 'buttons',
       buttons: normalized,
       header: options.header,
       footer: options.footer,
@@ -214,7 +217,7 @@ export class BaileysClient {
 
     if (this.state === 'connected' && this.socket && this.socket.sendButtons) {
       try {
-        const result = await this.sendButtonsThrough(this.socket, payload)
+        const result = await this.dispatchOutbound(this.socket, payload)
         this.stats.messagesSent += 1
         this.events.emit('sent', { id: result.id, to, kind: 'buttons' })
         return { id: result.id, queued: false }
@@ -230,16 +233,115 @@ export class BaileysClient {
     return { id: queuedId, queued: true }
   }
 
-  private async sendButtonsThrough(
+  /** Botones modernos: quick reply, URL o llamada (máximo 3). */
+  async sendInteractive(
+    to: string,
+    text: string,
+    buttons: InteractiveButton[],
+    options: ButtonMessageOptions = {},
+  ): Promise<{ id: string; queued: boolean }> {
+    const normalized = normalizeInteractiveButtons(buttons)
+    const id = typeof options.metadata?.id === 'string' ? options.metadata.id : `local-${++messageSequence}`
+    const payload: OutboundMessage = {
+      to,
+      text,
+      id,
+      kind: 'interactive',
+      interactiveButtons: normalized,
+      header: options.header,
+      footer: options.footer,
+      metadata: options.metadata,
+    }
+
+    if (this.state === 'connected' && this.socket && this.socket.sendInteractive) {
+      try {
+        const result = await this.dispatchOutbound(this.socket, payload)
+        this.stats.messagesSent += 1
+        this.events.emit('sent', { id: result.id, to, kind: 'interactive' })
+        return { id: result.id, queued: false }
+      } catch (error) {
+        this.stats.messagesFailed += 1
+        this.stats.lastError = error
+        this.events.emit('error', { where: 'sendInteractive', error })
+      }
+    }
+
+    const queuedId = this.queue.enqueue(payload, id)
+    this.events.emit('queued', { id: queuedId, size: this.queue.size })
+    return { id: queuedId, queued: true }
+  }
+
+  /** Tarjetas en carrusel con texto y botones por tarjeta. */
+  async sendCarousel(
+    to: string,
+    cards: CarouselCard[],
+    options: CarouselOptions = {},
+  ): Promise<{ id: string; queued: boolean }> {
+    const normalized = normalizeCards(cards)
+    const id = typeof options.metadata?.id === 'string' ? options.metadata.id : `local-${++messageSequence}`
+    const payload: OutboundMessage = {
+      to,
+      text: options.header ?? normalized[0]?.text ?? '',
+      id,
+      kind: 'carousel',
+      cards: normalized,
+      header: options.header,
+      footer: options.footer,
+      metadata: options.metadata,
+    }
+
+    if (this.state === 'connected' && this.socket && this.socket.sendCarousel) {
+      try {
+        const result = await this.dispatchOutbound(this.socket, payload)
+        this.stats.messagesSent += 1
+        this.events.emit('sent', { id: result.id, to, kind: 'carousel' })
+        return { id: result.id, queued: false }
+      } catch (error) {
+        this.stats.messagesFailed += 1
+        this.stats.lastError = error
+        this.events.emit('error', { where: 'sendCarousel', error })
+      }
+    }
+
+    const queuedId = this.queue.enqueue(payload, id)
+    this.events.emit('queued', { id: queuedId, size: this.queue.size })
+    return { id: queuedId, queued: true }
+  }
+
+  private async dispatchOutbound(
     socket: LiveSocket,
     payload: OutboundMessage,
-  ): Promise<{ id: string }> {
-    if (!socket.sendButtons) throw new Error('adapter does not support buttons')
-    return socket.sendButtons(payload.to, payload.text, payload.buttons ?? [], {
-      header: payload.header,
-      footer: payload.footer,
-      metadata: payload.metadata,
-    })
+  ): Promise<{ id: string; kind: OutboundKind }> {
+    switch (payload.kind) {
+      case 'buttons':
+        if (!socket.sendButtons) throw new Error('adapter does not support buttons')
+        const buttonsResult = await socket.sendButtons(payload.to, payload.text, payload.buttons ?? [], {
+          header: payload.header,
+          footer: payload.footer,
+          metadata: payload.metadata,
+        })
+        return { id: buttonsResult.id, kind: 'buttons' }
+      case 'interactive':
+        if (!socket.sendInteractive) throw new Error('adapter does not support interactive buttons')
+        const interactiveResult = await socket.sendInteractive(payload.to, payload.text, payload.interactiveButtons ?? [], {
+          header: payload.header,
+          footer: payload.footer,
+          metadata: payload.metadata,
+        })
+        return { id: interactiveResult.id, kind: 'interactive' }
+      case 'carousel':
+        if (!socket.sendCarousel) throw new Error('adapter does not support carousel')
+        const carouselResult = await socket.sendCarousel(payload.to, payload.cards ?? [], {
+          header: payload.header,
+          footer: payload.footer,
+          metadata: payload.metadata,
+        })
+        return { id: carouselResult.id, kind: 'carousel' }
+      default: {
+        const result = await socket.sendText(payload.to, payload.text, payload.metadata)
+        return { id: result.id, kind: 'text' }
+      }
+    }
   }
 
   /** espera a que el cliente alcance un estado. */
@@ -611,6 +713,49 @@ function normalizeButtons(buttons: QuickReplyButton[]): QuickReplyButton[] {
     if (!id || !label) throw new Error(`botón ${index + 1} necesita id y label`)
     if (label.length > 20) throw new Error(`el texto del botón ${index + 1} no puede superar 20 caracteres`)
     return { id, label }
+  })
+}
+
+function normalizeInteractiveButtons(buttons: InteractiveButton[]): InteractiveButton[] {
+  if (!Array.isArray(buttons) || buttons.length === 0) {
+    throw new Error('sendInteractive requiere al menos un botón')
+  }
+  if (buttons.length > 3) {
+    throw new Error('WhatsApp permite máximo 3 botones interactivos')
+  }
+  return buttons.map((button, index) => {
+    const label = String(button.label ?? '').trim()
+    if (!label) throw new Error(`botón ${index + 1} necesita label`)
+    if (label.length > 20) throw new Error(`el texto del botón ${index + 1} no puede superar 20 caracteres`)
+
+    const id = button.id ? String(button.id).trim() : undefined
+    const url = button.url ? String(button.url).trim() : undefined
+    const phoneNumber = button.phoneNumber ? String(button.phoneNumber).replace(/[^\d]/g, '') : undefined
+    if (!id && !url && !phoneNumber) {
+      throw new Error(`botón ${index + 1} necesita id, url o phoneNumber`)
+    }
+    return { label, ...(id ? { id } : {}), ...(url ? { url } : {}), ...(phoneNumber ? { phoneNumber } : {}) }
+  })
+}
+
+function normalizeCards(cards: CarouselCard[]): CarouselCard[] {
+  if (!Array.isArray(cards) || cards.length === 0) {
+    throw new Error('sendCarousel requiere al menos una tarjeta')
+  }
+  if (cards.length > 10) {
+    throw new Error('WhatsApp permite máximo 10 tarjetas por carrusel')
+  }
+  return cards.map((card, index) => {
+    const text = String(card.text ?? '').trim()
+    if (!text) throw new Error(`tarjeta ${index + 1} necesita text`)
+    const buttons = card.buttons ? normalizeButtons(card.buttons) : undefined
+    return {
+      ...(card.title ? { title: String(card.title).trim() } : {}),
+      ...(card.subtitle ? { subtitle: String(card.subtitle).trim() } : {}),
+      text,
+      ...(card.footer ? { footer: String(card.footer).trim() } : {}),
+      ...(buttons ? { buttons } : {}),
+    }
   })
 }
 

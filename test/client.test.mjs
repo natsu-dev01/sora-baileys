@@ -166,6 +166,59 @@ test('envía botones de respuesta rápida y emite el button reply', async () => 
   await client.stop()
 })
 
+test('envía botones interactivos y tarjetas en carrusel', async () => {
+  const adapter = new MockAdapter({ connectDelayMs: 5, qrOnFresh: false })
+  adapter.markLinked()
+  const client = new BaileysClient({
+    ...fastOptions,
+    adapter,
+    sessionDir: 'linked-carousel-test',
+  })
+
+  const connected = client.waitForEvent('connected')
+  await client.start()
+  await connected
+
+  const interactiveSent = client.waitForEvent('sent', 2000, (p) => p.kind === 'interactive')
+  const interactive = await client.sendInteractive('1234@s.whatsapp.net', '¿Qué haces?', [
+    { label: 'Web', url: 'https://sora.dev' },
+    { label: 'Llamar', phoneNumber: '5215512345678' },
+    { label: 'Sí', id: 'yes' },
+  ])
+  assert.equal(interactive.queued, false)
+  await interactiveSent
+  assert.deepEqual(adapter.sentInteractive[0].buttons, [
+    { label: 'Web', url: 'https://sora.dev' },
+    { label: 'Llamar', phoneNumber: '5215512345678' },
+    { label: 'Sí', id: 'yes' },
+  ])
+
+  const carouselSent = client.waitForEvent('sent', 2000, (p) => p.kind === 'carousel')
+  const carousel = await client.sendCarousel('1234@s.whatsapp.net', [
+    { title: 'Uno', text: 'Primera tarjeta', buttons: [{ id: 'a', label: 'A' }] },
+    { title: 'Dos', text: 'Segunda tarjeta', footer: 'Fin' },
+  ], { header: 'Menú' })
+  assert.equal(carousel.queued, false)
+  await carouselSent
+  assert.equal(adapter.sentCarousels[0].cards.length, 2)
+  assert.deepEqual(adapter.sentCarousels[0].cards[0].buttons, [{ id: 'a', label: 'A' }])
+
+  const buttonReply = client.waitForEvent('button')
+  adapter.pushInteractiveReply({ id: 'yes', displayText: 'Sí' })
+  assert.equal((await buttonReply).buttonId, 'yes')
+
+  await assert.rejects(
+    () => client.sendInteractive('1234@s.whatsapp.net', 'x', []),
+    /al menos un botón/,
+  )
+  await assert.rejects(
+    () => client.sendCarousel('1234@s.whatsapp.net', []),
+    /al menos una tarjeta/,
+  )
+
+  await client.stop()
+})
+
 test('el heartbeat fuerza reconexión cuando el socket está unhealthy', async () => {
   const adapter = new MockAdapter({ connectDelayMs: 5, qrOnFresh: false, unhealthy: true })
   adapter.markLinked()

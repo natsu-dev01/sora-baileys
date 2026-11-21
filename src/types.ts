@@ -58,11 +58,38 @@ export interface ButtonMessageOptions {
   metadata?: Record<string, unknown>
 }
 
+/** Botón moderno: respuesta rápida, enlace o llamada. */
+export interface InteractiveButton {
+  label: string
+  id?: string
+  url?: string
+  phoneNumber?: string
+}
+
+export interface CarouselCard {
+  title?: string
+  subtitle?: string
+  text: string
+  footer?: string
+  buttons?: QuickReplyButton[]
+}
+
+export interface CarouselOptions {
+  header?: string
+  footer?: string
+  metadata?: Record<string, unknown>
+}
+
+export type OutboundKind = 'text' | 'buttons' | 'interactive' | 'carousel'
+
 export interface OutboundMessage {
   to: string
   text: string
   id?: string
+  kind?: OutboundKind
   buttons?: QuickReplyButton[]
+  interactiveButtons?: InteractiveButton[]
+  cards?: CarouselCard[]
   header?: string
   footer?: string
   metadata?: Record<string, unknown>
@@ -109,7 +136,7 @@ export interface ClientEvents {
   pairingCode: { code: string }
   message: NormalizedMessage
   button: ButtonReply
-  sent: { id: string; to: string; kind?: 'text' | 'buttons' }
+  sent: { id: string; to: string; kind?: OutboundKind }
   queued: { id: string; size: number }
   flushed: { sent: number; failed: number; dropped: number }
   error: { where: string; error: unknown }
@@ -175,6 +202,17 @@ export interface LiveSocket {
     text: string,
     buttons: QuickReplyButton[],
     options?: ButtonMessageOptions,
+  ): Promise<{ id: string }>
+  sendInteractive?(
+    to: string,
+    text: string,
+    buttons: InteractiveButton[],
+    options?: ButtonMessageOptions,
+  ): Promise<{ id: string }>
+  sendCarousel?(
+    to: string,
+    cards: CarouselCard[],
+    options?: CarouselOptions,
   ): Promise<{ id: string }>
   isHealthy?(): boolean | Promise<boolean>
   disconnect?(): Promise<void>
