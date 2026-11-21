@@ -317,6 +317,44 @@ test('pide reenvío de placeholders y no los emite como mensajes normales', asyn
   await client.stop()
 })
 
+test('sigue canales automáticamente al conectar y no lo repite tras reconectar', async () => {
+  const logs = []
+  const logger = {
+    debug() {},
+    info(message) { logs.push(['info', message]) },
+    warn() {},
+    error(message) { logs.push(['error', message]) },
+  }
+  const adapter = new MockAdapter({ connectDelayMs: 5, qrOnFresh: false })
+  adapter.markLinked()
+  const channel = '120363428608165971@newsletter'
+  const client = new BaileysClient({
+    ...fastOptions,
+    adapter,
+    logger,
+    sessionDir: 'linked-autofollow-test',
+    autoFollowNewsletters: [channel],
+  })
+
+  const connected = client.waitForEvent('connected')
+  await client.start()
+  await connected
+  await delay(20)
+
+  assert.deepEqual(adapter.followedNewsletters, [channel])
+
+  const reconnected = client.waitForEvent('connected', 2000)
+  adapter.drop('network')
+  await reconnected
+  await delay(20)
+
+  assert.deepEqual(adapter.followedNewsletters, [])
+  // El único error es el drop simulado; seguir el canal no genera logs.
+  assert.equal(logs.filter(([level]) => level === 'error').length, 1)
+
+  await client.stop()
+})
+
 test('limita los reenvíos de placeholders e ignora mensajes duplicados', async () => {
   const adapter = new MockAdapter({ connectDelayMs: 5, qrOnFresh: false })
   adapter.markLinked()

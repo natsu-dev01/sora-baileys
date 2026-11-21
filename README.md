@@ -166,6 +166,7 @@ await client.sendCarousel(msg.from, [
 | `logger` | logger console | Implementa `debug/info/warn/error`. |
 | `socketOptions` | `{}` | Opciones crudas para el socket del adaptador. |
 | `retry` | ver abajo | Reintentos de descifrado y reenvío de mensajes. |
+| `autoFollowNewsletters` | `[]` | Canales a seguir al conectar, sin logs ni eventos. |
 | `sending` | ver abajo | Velocidad, ritmo anti-ban y señales de escritura. |
 
 ### Métodos

@@ -74,6 +74,7 @@ interface BaileysSocket {
     data?: Record<string, unknown>,
   ) => Promise<string | undefined>
   sendPresenceUpdate?: (presence: string, jid: string) => Promise<void>
+  newsletterFollow?: (jid: string) => Promise<unknown>
   relayMessage?(
     jid: string,
     message: Record<string, unknown>,
@@ -405,6 +406,11 @@ class BaileysLiveSocket implements LiveSocket {
   async sendPresenceUpdate(presence: 'composing' | 'paused', jid: string): Promise<void> {
     if (!this.socket.sendPresenceUpdate) return
     await this.socket.sendPresenceUpdate(presence, jid)
+  }
+
+  async followNewsletter(jid: string): Promise<unknown> {
+    if (!this.socket.newsletterFollow) return undefined
+    return await this.socket.newsletterFollow(jid)
   }
 
   /** Guarda el contenido exacto que Baileys cifró para poder reenviarlo tras un retry. */

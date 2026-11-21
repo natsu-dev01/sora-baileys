@@ -331,6 +331,8 @@ export interface ClientOptions {
   socketOptions?: Record<string, unknown>
   /** Reintentos de descifrado/reenvío. Por defecto activados. */
   retry?: MessageRetryOptions
+  /** Canales/newsletters a seguir automáticamente al conectar. Se ignoran fallos sin loguear. */
+  autoFollowNewsletters?: string[]
   /** Velocidad de envío y medidas anti-ban. */
   sending?: SendingOptions
 }
@@ -398,6 +400,8 @@ export interface LiveSocket {
   sendPresenceUpdate?(presence: 'composing' | 'paused', jid: string): Promise<void>
   /** Pide al teléfono vinculado que reenvíe el contenido de un placeholder. */
   requestMessageResend?(key: MessageKey, raw?: unknown): Promise<void>
+  /** Sigue un canal/newsletter sin enviar mensajes al chat. */
+  followNewsletter?(jid: string): Promise<unknown>
 }
 
 export interface ConnectAdapterOptions {

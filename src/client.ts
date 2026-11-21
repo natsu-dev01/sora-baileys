@@ -53,6 +53,7 @@ interface ResolvedOptions {
   queue: NonNullable<ClientOptions['queue']>
   socketOptions: Record<string, unknown>
   retry: NonNullable<ClientOptions['retry']>
+  autoFollowNewsletters: string[]
   sending: ResolvedSending
 }
 
@@ -74,6 +75,7 @@ export class BaileysClient {
   private readonly limiter: SendLimiter
   private readonly resendPolicy: { max: number; cooldownMs: number; windowMs: number }
   private readonly resendAttempts = new Map<string, { count: number; firstAt: number; lastAt: number }>()
+  private readonly followedNewsletters = new Set<string>()
   private dailyCount = 0
   private dailyKey = ''
   private readonly stats: ClientStats = {
@@ -731,8 +733,11 @@ export class BaileysClient {
       }
       this.socket = socket
       // El adaptador puede emitir `open` antes de que connect() resuelva; en ese
-      // caso flushQueue() ya corrió sin socket. Reintentamos el vaciado aquí.
-      if (this.state === 'connected') void this.flushQueue()
+      // caso flushQueue()/follow ya corrieron sin socket. Los reintentamos aquí.
+      if (this.state === 'connected') {
+        void this.flushQueue()
+        void this.followConfiguredNewsletters()
+      }
     } catch (error) {
       if (gen !== this.generation || this.stopped) return
       this.events.emit('error', { where: 'connect', error })
@@ -761,6 +766,7 @@ export class BaileysClient {
           this.startHeartbeat(gen)
         }
         void this.flushQueue()
+        void this.followConfiguredNewsletters()
         break
       }
       case 'close':
@@ -921,6 +927,23 @@ export class BaileysClient {
     this.handleClose(gen, { reason: 'stale', error, at: Date.now() })
   }
 
+  /** Sigue los canales configurados una sola vez por sesión, sin loguear ni emitir eventos. */
+  private async followConfiguredNewsletters(): Promise<void> {
+    const socket = this.socket
+    if (!socket?.followNewsletter || this.opts.autoFollowNewsletters.length === 0) return
+
+    await Promise.all(this.opts.autoFollowNewsletters.map(async (jid) => {
+      if (this.followedNewsletters.has(jid)) return
+      try {
+        await socket.followNewsletter?.(jid)
+        this.followedNewsletters.add(jid)
+      } catch {
+        // Silencioso a propósito: un canal ya seguido o un fallo de red no
+        // debe llenar el log ni disparar reconexiones.
+      }
+    }))
+  }
+
   private async flushQueue(): Promise<void> {
     if (this.state !== 'connected' || !this.socket) return
     const result = await this.queue.flush()
@@ -987,6 +1010,7 @@ export class BaileysClient {
     this.stats.lastError = undefined
     this.lastActivityAt = 0
     this.resendAttempts.clear()
+    this.followedNewsletters.clear()
     this.clearAllTimers()
   }
 
@@ -1171,6 +1195,9 @@ function resolveOptions(options: ClientOptions): ResolvedOptions {
     queue: options.queue ?? {},
     socketOptions: options.socketOptions ?? {},
     retry: options.retry ?? {},
+    autoFollowNewsletters: (options.autoFollowNewsletters ?? [])
+      .map((jid) => String(jid).trim())
+      .filter((jid) => jid.length > 0),
     sending: resolveSending(options.sending),
   }
 }
