@@ -21,11 +21,33 @@ Cliente de WhatsApp Web propio, tipado y **orientado a resiliencia**. No es un c
 
 ## Instalación
 
+Instálalo directamente desde GitHub:
+
 ```bash
+npm install github:natsu-dev01/sora-baileys
+```
+
+El paquete se instala como `@sora/baileys`, así que los imports no cambian:
+
+```js
+import { BaileysClient } from '@sora/baileys'
+```
+
+También puedes fijar un commit concreto:
+
+```bash
+npm install github:natsu-dev01/sora-baileys#06858d7
+```
+
+Si prefieres clonar el repo para desarrollar:
+
+```bash
+git clone https://github.com/natsu-dev01/sora-baileys.git
+cd sora-baileys
 npm install
 ```
 
-El núcleo no necesita Baileys. Para conectar de verdad:
+El núcleo no necesita Baileys. Para conectar de verdad añade el peer opcional:
 
 ```bash
 npm install @whiskeysockets/baileys
