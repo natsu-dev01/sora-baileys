@@ -209,7 +209,8 @@ El adaptador debe traducir los eventos de su transporte a `open`, `close`, `qr`,
 - El mock volvía a pedir QR tras cada reconexión; ahora marca la sesión como vinculada después del primer `open`.
 - Respuestas de botón de `buttonsResponseMessage` y `templateButtonReplyMessage` se normalizan en `buttonId`/`buttonText`.
 - Validación de botones (1-3, id/label obligatorios, 20 caracteres máximos) antes de tocar el transporte.
-- TypeScript actualizado a 7.x y build/tests verificados (21/21).
+- `messageTimestamp` de Baileys (segundos o `Long`) se normaliza a ms; el heartbeat ya no cierra el socket con `stale` falso.
+- TypeScript actualizado a 7.x y build/tests verificados (23/23).
 
 ## Limitaciones
 

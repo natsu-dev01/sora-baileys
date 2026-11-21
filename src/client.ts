@@ -2,6 +2,7 @@ import { BaileysAdapter } from './adapters/baileys-adapter.js'
 import { backoffDelay } from './core/backoff.js'
 import { Emitter } from './core/emitter.js'
 import { createLogger } from './core/logger.js'
+import { toMillis } from './core/time.js'
 import { createMessageStore, createRetryCache } from './core/message-store.js'
 import { RetryQueue } from './core/queue.js'
 import type {
@@ -509,7 +510,8 @@ export class BaileysClient {
       }
       case 'message': {
         const message = payload as NormalizedMessage
-        this.lastActivityAt = message.timestamp
+        // Defensa en profundidad: un adaptador externo puede emitir segundos.
+        this.lastActivityAt = toMillis(message.timestamp)
         if (message.unavailable) {
           // Placeholder de WhatsApp: no lo tratamos como texto ni disparamos botones.
           // Pedimos el contenido real al teléfono y avisamos por un evento aparte.

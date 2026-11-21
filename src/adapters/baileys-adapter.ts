@@ -1,4 +1,5 @@
 import { createRetryCache } from '../core/message-store.js'
+import { toMillis } from '../core/time.js'
 import type {
   AuthSession,
   ButtonMessageOptions,
@@ -190,7 +191,7 @@ function extractStatus(error: unknown): number | undefined {
   return undefined
 }
 
-function normalizeMessage(message: Record<string, unknown>): import('../types.js').NormalizedMessage {
+export function normalizeMessage(message: Record<string, unknown>): import('../types.js').NormalizedMessage {
   const key = (message.key ?? {}) as { id?: string; remoteJid?: string }
   const content = (message.message ?? {}) as {
     conversation?: string
@@ -229,16 +230,13 @@ function normalizeMessage(message: Record<string, unknown>): import('../types.js
     : stubType === 2 ? 'CIPHERTEXT' : stubType === 3 ? 'FUTUREPROOF' : undefined
 
   const remoteJid = key.remoteJid ?? ''
-  const rawTimestamp = message.messageTimestamp
-  const timestamp = typeof rawTimestamp === 'number'
-    ? rawTimestamp
-    : Number((rawTimestamp as { toString?: () => string } | undefined)?.toString?.() ?? Date.now())
+  const timestamp = toMillis(message.messageTimestamp)
 
   return {
     id: key.id ?? `unknown-${Date.now()}`,
     from: remoteJid,
     text: content.conversation ?? content.extendedTextMessage?.text ?? buttonText ?? interactiveText ?? '',
-    timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
+    timestamp,
     groupId: remoteJid.endsWith('@g.us') ? remoteJid : undefined,
     buttonId: unavailable ? undefined : buttonId ?? interactiveId,
     buttonText: unavailable ? undefined : buttonText ?? interactiveText,

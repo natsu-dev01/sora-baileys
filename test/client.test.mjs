@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { BaileysClient, MockAdapter, createMessageStore } from '../dist/index.js'
+import { BaileysClient, MockAdapter, createMessageStore, toMillis } from '../dist/index.js'
+import { normalizeMessage } from '../dist/adapters/baileys-adapter.js'
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const fastOptions = {
@@ -332,4 +333,50 @@ test('el store recuerda mensajes para reintentos y respeta límites', () => {
   assert.equal(store.get({ id: 'c' }), undefined)
   store.clear()
   assert.equal(store.size, 0)
+})
+
+test('normaliza messageTimestamp de segundos a milisegundos', () => {
+  const nowMs = Date.now()
+  const seconds = Math.floor(nowMs / 1000)
+
+  assert.equal(toMillis(seconds), seconds * 1000)
+  assert.equal(toMillis(nowMs), nowMs)
+  assert.equal(toMillis({ toString: () => String(seconds) }), seconds * 1000)
+  assert.equal(toMillis(0, 123), 123)
+  assert.equal(toMillis('nope', 123), 123)
+
+  const normalized = normalizeMessage({
+    key: { id: 'ts-1', remoteJid: '1234@s.whatsapp.net' },
+    message: { conversation: 'ping' },
+    messageTimestamp: seconds,
+  })
+  assert.equal(normalized.timestamp, seconds * 1000)
+  assert.ok(normalized.timestamp > 1e12)
+})
+
+test('un messageTimestamp en segundos no dispara stale en el heartbeat', async () => {
+  const adapter = new MockAdapter({ connectDelayMs: 5, qrOnFresh: false })
+  adapter.markLinked()
+  const client = new BaileysClient({
+    ...fastOptions,
+    adapter,
+    heartbeatEveryMs: 1000,
+    staleAfterMs: 2000,
+    sessionDir: 'seconds-timestamp-stale-test',
+  })
+
+  const connected = client.waitForEvent('connected')
+  await client.start()
+  await connected
+
+  adapter.pushMessage({
+    text: 'ping',
+    timestamp: Math.floor(Date.now() / 1000),
+  })
+
+  await delay(1150)
+
+  assert.equal(client.status.state, 'connected')
+  assert.equal(client.status.stats.reconnects, 0)
+  await client.stop()
 })
