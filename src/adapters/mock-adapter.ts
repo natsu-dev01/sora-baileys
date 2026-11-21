@@ -175,6 +175,14 @@ export class MockAdapter implements SocketAdapter {
     return this.current?.resendRequests ?? []
   }
 
+  get sentMetadata(): Array<Record<string, unknown>> {
+    return this.current?.sentMetadata ?? []
+  }
+
+  get presences(): Array<{ presence: string; jid: string }> {
+    return this.current?.presences ?? []
+  }
+
   async connect(options: ConnectAdapterOptions): Promise<LiveSocket> {
     const emit: Emit = options.onEvent
 
@@ -224,6 +232,8 @@ class MockSocket implements LiveSocket {
   readonly sentInteractive: Array<{ to: string; text: string; buttons: InteractiveButton[] }> = []
   readonly sentCarousels: Array<{ to: string; cards: CarouselCard[] }> = []
   readonly resendRequests: Array<{ key: MessageKey; raw?: unknown }> = []
+  readonly sentMetadata: Array<Record<string, unknown>> = []
+  readonly presences: Array<{ presence: string; jid: string }> = []
 
   constructor(private readonly opts: MockSocketOptions) {}
 
@@ -231,6 +241,7 @@ class MockSocket implements LiveSocket {
     if (this.closed) throw new Error('socket closed')
     await delay(this.opts.latencyMs)
     if (this.opts.shouldFail()) throw new Error('mock send failure')
+    this.sentMetadata.push({ ...metadata })
     return { id: `mock-sent-${++counter}-${metadata?.tag ?? 'ok'}` }
   }
 
@@ -243,6 +254,7 @@ class MockSocket implements LiveSocket {
     if (this.closed) throw new Error('socket closed')
     await delay(this.opts.latencyMs)
     if (this.opts.shouldFail()) throw new Error('mock send failure')
+    this.sentMetadata.push({ ..._options?.metadata })
     this.sentButtons.push({ to, text, buttons })
     return { id: `mock-buttons-${++counter}` }
   }
@@ -256,6 +268,7 @@ class MockSocket implements LiveSocket {
     if (this.closed) throw new Error('socket closed')
     await delay(this.opts.latencyMs)
     if (this.opts.shouldFail()) throw new Error('mock send failure')
+    this.sentMetadata.push({ ..._options?.metadata })
     this.sentInteractive.push({ to, text, buttons })
     return { id: `mock-interactive-${++counter}` }
   }
@@ -268,6 +281,7 @@ class MockSocket implements LiveSocket {
     if (this.closed) throw new Error('socket closed')
     await delay(this.opts.latencyMs)
     if (this.opts.shouldFail()) throw new Error('mock send failure')
+    this.sentMetadata.push({ ..._options?.metadata })
     this.sentCarousels.push({ to, cards })
     return { id: `mock-carousel-${++counter}` }
   }
@@ -275,6 +289,11 @@ class MockSocket implements LiveSocket {
   async requestMessageResend(key: MessageKey, raw?: unknown): Promise<void> {
     if (this.closed) throw new Error('socket closed')
     this.resendRequests.push({ key, raw })
+  }
+
+  async sendPresenceUpdate(presence: 'composing' | 'paused', jid: string): Promise<void> {
+    if (this.closed) throw new Error('socket closed')
+    this.presences.push({ presence, jid })
   }
 
   isHealthy(): boolean {

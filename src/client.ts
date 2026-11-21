@@ -5,6 +5,8 @@ import { createLogger } from './core/logger.js'
 import { toMillis } from './core/time.js'
 import { createMessageStore, createRetryCache } from './core/message-store.js'
 import { RetryQueue } from './core/queue.js'
+import { resolveSending, SendLimiter } from './core/sender.js'
+import type { ResolvedSending } from './core/sender.js'
 import type {
   AuthSession,
   ButtonMessageOptions,
@@ -45,6 +47,7 @@ interface ResolvedOptions {
   queue: NonNullable<ClientOptions['queue']>
   socketOptions: Record<string, unknown>
   retry: NonNullable<ClientOptions['retry']>
+  sending: ResolvedSending
 }
 
 let messageSequence = 0
@@ -62,6 +65,9 @@ export class BaileysClient {
   private readonly queue: RetryQueue<OutboundMessage>
   private readonly messageStore: MessageStore
   private readonly retryCache: RetryCache
+  private readonly limiter: SendLimiter
+  private dailyCount = 0
+  private dailyKey = ''
   private readonly stats: ClientStats = {
     reconnects: 0,
     messagesSent: 0,
@@ -99,8 +105,10 @@ export class BaileysClient {
       maxMessages: options.retry?.maxRememberedMessages,
     }, this.logger)
     this.retryCache = options.retry?.retryCache ?? createRetryCache()
+    this.limiter = new SendLimiter(this.opts.sending, this.logger)
 
     this.queue = new RetryQueue<OutboundMessage>({
+      concurrency: this.opts.sending.maxConcurrent,
       ...this.opts.queue,
       logger: this.logger,
       onSend: async (payload) => {
@@ -123,6 +131,7 @@ export class BaileysClient {
       attempt: this.attempt,
       queueSize: this.queue.size,
       stats: { ...this.stats },
+      sending: { dailyCount: this.dailyCount, inFlight: this.limiter.inFlight },
     }
   }
 
@@ -211,11 +220,14 @@ export class BaileysClient {
 
     if (this.state === 'connected' && this.socket) {
       try {
-        const result = await this.socket.sendText(to, text, metadata)
+        const result = await this.dispatchOutbound(this.socket, {
+          to, text, id, kind: 'text', metadata,
+        })
         this.stats.messagesSent += 1
         this.events.emit('sent', { id: result.id, to, kind: 'text' })
         return { id: result.id, queued: false }
       } catch (error) {
+        if (isDailyLimitError(error)) throw error
         this.stats.messagesFailed += 1
         this.stats.lastError = error
         this.events.emit('error', { where: 'sendText', error })
@@ -257,6 +269,7 @@ export class BaileysClient {
         this.events.emit('sent', { id: result.id, to, kind: 'buttons' })
         return { id: result.id, queued: false }
       } catch (error) {
+        if (isDailyLimitError(error)) throw error
         this.stats.messagesFailed += 1
         this.stats.lastError = error
         this.events.emit('error', { where: 'sendButtons', error })
@@ -295,6 +308,7 @@ export class BaileysClient {
         this.events.emit('sent', { id: result.id, to, kind: 'interactive' })
         return { id: result.id, queued: false }
       } catch (error) {
+        if (isDailyLimitError(error)) throw error
         this.stats.messagesFailed += 1
         this.stats.lastError = error
         this.events.emit('error', { where: 'sendInteractive', error })
@@ -332,6 +346,7 @@ export class BaileysClient {
         this.events.emit('sent', { id: result.id, to, kind: 'carousel' })
         return { id: result.id, queued: false }
       } catch (error) {
+        if (isDailyLimitError(error)) throw error
         this.stats.messagesFailed += 1
         this.stats.lastError = error
         this.events.emit('error', { where: 'sendCarousel', error })
@@ -347,13 +362,55 @@ export class BaileysClient {
     socket: LiveSocket,
     payload: OutboundMessage,
   ): Promise<{ id: string; kind: OutboundKind }> {
+    const release = await this.limiter.acquire(payload.to)
+    try {
+      this.checkDailyLimit()
+      if (this.opts.sending.typing) {
+        await socket.sendPresenceUpdate?.('composing', payload.to)
+        await new Promise((resolve) => setTimeout(resolve, this.opts.sending.typingMs))
+      }
+      const result = await this.transmit(socket, payload)
+      if (this.opts.sending.typing) await socket.sendPresenceUpdate?.('paused', payload.to)
+      return result
+    } finally {
+      release()
+    }
+  }
+
+  /** Id estable por mensaje: si un envío se reintenta, WhatsApp lo deduplica. */
+  private sendMetadata(payload: OutboundMessage): Record<string, unknown> {
+    return { ...payload.metadata, id: payload.id }
+  }
+
+  private checkDailyLimit(): void {
+    const limit = this.opts.sending.dailyLimit
+    if (limit <= 0) return
+    const today = new Date().toISOString().slice(0, 10)
+    if (today !== this.dailyKey) {
+      this.dailyKey = today
+      this.dailyCount = 0
+    }
+    if (this.dailyCount >= limit) {
+      this.events.emit('limitReached', { limit, at: Date.now() })
+      const error = new Error(`daily message limit reached (${limit})`) as Error & { code?: string }
+      error.code = 'DAILY_LIMIT'
+      throw error
+    }
+    this.dailyCount += 1
+  }
+
+  private async transmit(
+    socket: LiveSocket,
+    payload: OutboundMessage,
+  ): Promise<{ id: string; kind: OutboundKind }> {
+    const metadata = this.sendMetadata(payload)
     switch (payload.kind) {
       case 'buttons':
         if (!socket.sendButtons) throw new Error('adapter does not support buttons')
         const buttonsResult = await socket.sendButtons(payload.to, payload.text, payload.buttons ?? [], {
           header: payload.header,
           footer: payload.footer,
-          metadata: payload.metadata,
+          metadata,
         })
         return { id: buttonsResult.id, kind: 'buttons' }
       case 'interactive':
@@ -361,7 +418,7 @@ export class BaileysClient {
         const interactiveResult = await socket.sendInteractive(payload.to, payload.text, payload.interactiveButtons ?? [], {
           header: payload.header,
           footer: payload.footer,
-          metadata: payload.metadata,
+          metadata,
         })
         return { id: interactiveResult.id, kind: 'interactive' }
       case 'carousel':
@@ -369,11 +426,11 @@ export class BaileysClient {
         const carouselResult = await socket.sendCarousel(payload.to, payload.cards ?? [], {
           header: payload.header,
           footer: payload.footer,
-          metadata: payload.metadata,
+          metadata,
         })
         return { id: carouselResult.id, kind: 'carousel' }
       default: {
-        const result = await socket.sendText(payload.to, payload.text, payload.metadata)
+        const result = await socket.sendText(payload.to, payload.text, metadata)
         return { id: result.id, kind: 'text' }
       }
     }
@@ -447,6 +504,7 @@ export class BaileysClient {
         appName: this.opts.appName,
         socketOptions: this.opts.socketOptions,
         retry: this.opts.retry,
+        sendTimeoutMs: this.opts.sending.sendTimeoutMs,
         messageStore: this.messageStore,
         retryCache: this.retryCache,
         logger: this.logger,
@@ -750,6 +808,10 @@ export class BaileysClient {
   }
 }
 
+function isDailyLimitError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: string }).code === 'DAILY_LIMIT'
+}
+
 function normalizeButtons(buttons: QuickReplyButton[]): QuickReplyButton[] {
   if (!Array.isArray(buttons) || buttons.length === 0) {
     throw new Error('sendButtons requiere al menos un botón')
@@ -826,5 +888,6 @@ function resolveOptions(options: ClientOptions): ResolvedOptions {
     queue: options.queue ?? {},
     socketOptions: options.socketOptions ?? {},
     retry: options.retry ?? {},
+    sending: resolveSending(options.sending),
   }
 }

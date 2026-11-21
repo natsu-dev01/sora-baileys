@@ -81,7 +81,31 @@ export interface MessageRetryOptions {
   retryCache?: RetryCache
 }
 
+/** Política de envío: velocidad, ritmo anti-ban y señales humanas. */
+export interface SendingOptions {
+  /** Envíos simultáneos a destinatarios distintos. Por defecto 3. */
+  maxConcurrent?: number
+  /** Mensajes por minuto a nivel global. 0 desactiva el límite. Por defecto 60. */
+  messagesPerMinute?: number
+  /** Mensajes iniciales enviados sin esperar. Por defecto 5. */
+  burst?: number
+  /** Espera mínima entre mensajes al mismo destinatario en ms. Por defecto 800. */
+  perRecipientCooldownMs?: number
+  /** Jitter aleatorio añadido al espaciado, en ms. Por defecto 400. */
+  jitterMs?: number
+  /** Timeout de `sendMessage`. 0 lo desactiva. Por defecto 15000. */
+  sendTimeoutMs?: number
+  /** Tope diario de mensajes. 0 lo desactiva. Por defecto 0. */
+  dailyLimit?: number
+  /** Enviar `composing`/`paused` antes y después de cada mensaje. Por defecto false. */
+  typing?: boolean
+  /** Duración del estado `composing` cuando `typing` está activo. Por defecto 1200. */
+  typingMs?: number
+}
+
 export interface QueueOptions {
+  /** Envíos concurrentes durante el flush. Por defecto 1. */
+  concurrency?: number
   /** Número máximo de mensajes en cola. Por defecto 1000. */
   maxSize?: number
   /** Tiempo de vida de un mensaje en cola. Por defecto 5 minutos. */
@@ -174,6 +198,7 @@ export interface ClientStatus {
   attempt: number
   queueSize: number
   stats: ClientStats
+  sending: { dailyCount: number; inFlight: number }
 }
 
 export interface ClientEvents {
@@ -190,6 +215,7 @@ export interface ClientEvents {
   sent: { id: string; to: string; kind?: OutboundKind }
   queued: { id: string; size: number }
   flushed: { sent: number; failed: number; dropped: number }
+  limitReached: { limit: number; at: number }
   error: { where: string; error: unknown }
 }
 
@@ -223,6 +249,8 @@ export interface ClientOptions {
   socketOptions?: Record<string, unknown>
   /** Reintentos de descifrado/reenvío. Por defecto activados. */
   retry?: MessageRetryOptions
+  /** Velocidad de envío y medidas anti-ban. */
+  sending?: SendingOptions
 }
 
 /** Eventos que un adaptador puede emitir hacia el cliente. */
@@ -270,6 +298,7 @@ export interface LiveSocket {
   isHealthy?(): boolean | Promise<boolean>
   disconnect?(): Promise<void>
   requestPairingCode?(phoneNumber: string): Promise<string>
+  sendPresenceUpdate?(presence: 'composing' | 'paused', jid: string): Promise<void>
   /** Pide al teléfono vinculado que reenvíe el contenido de un placeholder. */
   requestMessageResend?(key: MessageKey, raw?: unknown): Promise<void>
 }
@@ -281,6 +310,7 @@ export interface ConnectAdapterOptions {
   appName?: string
   socketOptions?: Record<string, unknown>
   retry?: MessageRetryOptions
+  sendTimeoutMs?: number
   messageStore?: MessageStore
   retryCache?: RetryCache
   logger?: LoggerLike

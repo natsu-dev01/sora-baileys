@@ -2,6 +2,26 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { RetryQueue } from '../dist/index.js'
 
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+test('flush concurrente respeta el límite configurado', async () => {
+  let active = 0
+  let peak = 0
+  const queue = new RetryQueue({
+    concurrency: 3,
+    onSend: async () => {
+      active += 1
+      peak = Math.max(peak, active)
+      await delay(10)
+      active -= 1
+    },
+  })
+  for (let i = 0; i < 6; i += 1) queue.enqueue({ text: String(i) })
+  await queue.flush()
+  assert.equal(peak, 3)
+  assert.equal(queue.size, 0)
+})
+
 test('flush envía en orden y vacía la cola', async () => {
   const sent = []
   const queue = new RetryQueue({

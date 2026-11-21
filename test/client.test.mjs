@@ -9,6 +9,13 @@ const fastOptions = {
   restartDelayMs: 5,
   heartbeatEveryMs: 1000,
   staleAfterMs: 5000,
+  sending: {
+    maxConcurrent: 1,
+    messagesPerMinute: 0,
+    perRecipientCooldownMs: 0,
+    jitterMs: 0,
+    sendTimeoutMs: 0,
+  },
 }
 
 test('arranca, emite QR, conecta, recibe y envía mensajes', async () => {
@@ -378,5 +385,43 @@ test('un messageTimestamp en segundos no dispara stale en el heartbeat', async (
 
   assert.equal(client.status.state, 'connected')
   assert.equal(client.status.stats.reconnects, 0)
+  await client.stop()
+})
+
+test('aplica dailyLimit, ids estables y presencia de escritura', async () => {
+  const adapter = new MockAdapter({ connectDelayMs: 5, qrOnFresh: false })
+  adapter.markLinked()
+  const client = new BaileysClient({
+    ...fastOptions,
+    adapter,
+    sessionDir: 'linked-sending-policy-test',
+    sending: {
+      ...fastOptions.sending,
+      dailyLimit: 2,
+      typing: true,
+      typingMs: 100,
+    },
+  })
+
+  const connected = client.waitForEvent('connected')
+  await client.start()
+  await connected
+
+  await client.sendText('1@s.whatsapp.net', 'uno')
+  await client.sendText('2@s.whatsapp.net', 'dos')
+  const limit = client.waitForEvent('limitReached', 2000)
+  await assert.rejects(
+    () => client.sendText('3@s.whatsapp.net', 'tres'),
+    /daily message limit/,
+  )
+  await limit
+
+  assert.equal(adapter.sentMetadata.length, 2)
+  assert.match(adapter.sentMetadata[0].id, /^local-/)
+  assert.notEqual(adapter.sentMetadata[0].id, adapter.sentMetadata[1].id)
+  assert.deepEqual(adapter.presences.map((p) => p.presence), [
+    'composing', 'paused', 'composing', 'paused',
+  ])
+
   await client.stop()
 })

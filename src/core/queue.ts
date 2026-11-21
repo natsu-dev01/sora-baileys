@@ -36,6 +36,7 @@ export class RetryQueue<T> {
   private readonly maxSize: number
   private readonly ttlMs: number
   private readonly maxAttempts: number
+  private readonly concurrency: number
   private readonly now: () => number
   private readonly onSend: (payload: T, item: QueueItem<T>) => Promise<void>
   private readonly logger?: LoggerLike
@@ -45,6 +46,7 @@ export class RetryQueue<T> {
     this.maxSize = Math.max(1, config.maxSize ?? 1000)
     this.ttlMs = Math.max(1, config.ttlMs ?? 5 * 60_000)
     this.maxAttempts = Math.max(1, config.maxAttempts ?? 5)
+    this.concurrency = Math.max(1, Math.floor(config.concurrency ?? 1))
     this.now = config.now ?? (() => Date.now())
     this.onSend = config.onSend
     this.logger = config.logger
@@ -83,32 +85,39 @@ export class RetryQueue<T> {
     const result: FlushResult = { sent: 0, failed: 0, dropped: 0 }
     try {
       const snapshot = [...this.items]
-      for (const item of snapshot) {
-        if (!this.items.includes(item)) continue
+      let cursor = 0
+      const worker = async (): Promise<void> => {
+        for (;;) {
+          const item = snapshot[cursor++]
+          if (!item) return
+          if (!this.items.includes(item)) continue
 
-        const at = this.now()
-        if (item.expiresAt <= at) {
-          this.remove(item)
-          result.dropped += 1
-          continue
-        }
-
-        item.attempts += 1
-        try {
-          await this.onSend(item.payload, item)
-          this.remove(item)
-          result.sent += 1
-        } catch (error) {
-          if (item.attempts >= this.maxAttempts) {
+          const at = this.now()
+          if (item.expiresAt <= at) {
             this.remove(item)
             result.dropped += 1
-            this.logger?.error('queue message exceeded max attempts', { id: item.id, error })
-          } else {
-            result.failed += 1
-            this.logger?.warn('queue message will be retried', { id: item.id, attempts: item.attempts })
+            continue
+          }
+
+          item.attempts += 1
+          try {
+            await this.onSend(item.payload, item)
+            this.remove(item)
+            result.sent += 1
+          } catch (error) {
+            if (item.attempts >= this.maxAttempts) {
+              this.remove(item)
+              result.dropped += 1
+              this.logger?.error('queue message exceeded max attempts', { id: item.id, error })
+            } else {
+              result.failed += 1
+              this.logger?.warn('queue message will be retried', { id: item.id, attempts: item.attempts })
+            }
           }
         }
       }
+      const workers = Math.min(this.concurrency, snapshot.length)
+      await Promise.all(Array.from({ length: workers }, () => worker()))
     } finally {
       this.flushing = false
     }

@@ -53,6 +53,7 @@ interface BaileysSocket {
     key: Record<string, unknown>,
     data?: Record<string, unknown>,
   ) => Promise<string | undefined>
+  sendPresenceUpdate?: (presence: string, jid: string) => Promise<void>
   end?: (error?: unknown) => void
   authState?: { creds?: { registered?: boolean } }
   ws?: { readyState?: number }
@@ -164,7 +165,7 @@ export class BaileysAdapter implements SocketAdapter {
       }
     }
 
-    return new BaileysLiveSocket(socket, messageStore)
+    return new BaileysLiveSocket(socket, messageStore, options.sendTimeoutMs)
   }
 }
 
@@ -280,7 +281,47 @@ class BaileysLiveSocket implements LiveSocket {
   constructor(
     private readonly socket: BaileysSocket,
     private readonly store?: MessageStore,
+    private readonly sendTimeoutMs = 0,
   ) {}
+
+  /**
+   * Envía con id estable y timeout. El id evita duplicados si un envío lento se
+   * reintenta; el timeout evita promesas colgadas con el upstream.
+   */
+  private async send(
+    to: string,
+    content: Record<string, unknown>,
+    metadata?: Record<string, unknown>,
+  ): Promise<{ key?: { id?: string } } | undefined> {
+    const options: Record<string, unknown> = { ...metadata }
+    const id = typeof options.id === 'string' && options.id.length > 0 ? options.id : undefined
+    if (id) options.messageId = id
+
+    if (this.sendTimeoutMs <= 0) {
+      return this.socket.sendMessage(to, content, options)
+    }
+
+    let timer: NodeJS.Timeout | undefined
+    try {
+      return await Promise.race([
+        this.socket.sendMessage(to, content, options),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`sendMessage timeout after ${this.sendTimeoutMs}ms`)),
+            this.sendTimeoutMs,
+          )
+          timer.unref?.()
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  async sendPresenceUpdate(presence: 'composing' | 'paused', jid: string): Promise<void> {
+    if (!this.socket.sendPresenceUpdate) return
+    await this.socket.sendPresenceUpdate(presence, jid)
+  }
 
   /** Guarda el contenido exacto que Baileys cifró para poder reenviarlo tras un retry. */
   private remember(
@@ -321,7 +362,7 @@ class BaileysLiveSocket implements LiveSocket {
 
   async sendText(to: string, text: string, metadata?: Record<string, unknown>): Promise<{ id: string }> {
     const content: Record<string, unknown> = { text }
-    const result = await this.socket.sendMessage(to, content, metadata)
+    const result = await this.send(to, content, metadata)
     this.remember(content, to, result?.key?.id, metadata?.id as string | undefined)
     return { id: result?.key?.id ?? `unknown-${Date.now()}` }
   }
@@ -345,7 +386,7 @@ class BaileysLiveSocket implements LiveSocket {
         })),
       },
     }
-    const result = await this.socket.sendMessage(to, content, options.metadata)
+    const result = await this.send(to, content, options.metadata)
     this.remember(content, to, result?.key?.id, options.metadata?.id as string | undefined)
 
     return { id: result?.key?.id ?? `unknown-${Date.now()}` }
@@ -368,7 +409,7 @@ class BaileysLiveSocket implements LiveSocket {
         },
       },
     }
-    const result = await this.socket.sendMessage(to, content, options.metadata)
+    const result = await this.send(to, content, options.metadata)
     this.remember(content, to, result?.key?.id, options.metadata?.id as string | undefined)
 
     return { id: result?.key?.id ?? `unknown-${Date.now()}` }
@@ -407,7 +448,7 @@ class BaileysLiveSocket implements LiveSocket {
         },
       },
     }
-    const result = await this.socket.sendMessage(to, content, options.metadata)
+    const result = await this.send(to, content, options.metadata)
     this.remember(content, to, result?.key?.id, options.metadata?.id as string | undefined)
 
     return { id: result?.key?.id ?? `unknown-${Date.now()}` }

@@ -139,6 +139,7 @@ client.on('button', (reply) => {
 | `logger` | logger console | Implementa `debug/info/warn/error`. |
 | `socketOptions` | `{}` | Opciones crudas para el socket del adaptador. |
 | `retry` | ver abajo | Reintentos de descifrado y reenvío de mensajes. |
+| `sending` | ver abajo | Velocidad, ritmo anti-ban y señales de escritura. |
 
 ### Métodos
 
@@ -152,11 +153,11 @@ client.on('button', (reply) => {
 - `choose(config)` / `promptText(question)` — menú CLI y entrada de texto, exportados desde el paquete.
 - `waitForState(state, timeoutMs?)` / `waitForEvent(event, timeoutMs?, predicate?)`.
 - `on/once/off` para los eventos tipados.
-- `status` — `{ state, attempt, queueSize, stats }`.
+- `status` — `{ state, attempt, queueSize, stats, sending }`.
 
 ### Eventos
 
-`state`, `connecting`, `connected`, `disconnected`, `qr`, `pairingCode`, `message`, `messageUnavailable`, `button`, `sent`, `queued`, `flushed`, `error`.
+`state`, `connecting`, `connected`, `disconnected`, `qr`, `pairingCode`, `message`, `messageUnavailable`, `button`, `sent`, `queued`, `flushed`, `limitReached`, `error`.
 
 ## Reintentos de descifrado
 
@@ -179,6 +180,32 @@ client.on('messageUnavailable', async (msg) => {
 ```
 
 Los placeholders no se emiten como `message`. El evento `messageUnavailable` ya dispara un reenvío automáticamente; llama a `requestResend()` solo si quieres forzar otro intento.
+
+## Velocidad y anti-ban
+
+Por defecto los envíos van a 60 mensajes/minuto con ráfaga inicial de 5, hasta 3 destinatarios en paralelo, 800 ms de separación por chat + jitter y timeout de 15 s. Cada mensaje usa un id estable: si un envío se reintenta, WhatsApp lo deduce en vez de duplicarlo.
+
+```js
+const client = new BaileysClient({
+  sending: {
+    maxConcurrent: 3,
+    messagesPerMinute: 60,
+    burst: 5,
+    perRecipientCooldownMs: 800,
+    jitterMs: 400,
+    sendTimeoutMs: 15_000,
+    dailyLimit: 500,
+    typing: true,
+    typingMs: 1200,
+  },
+})
+
+client.on('limitReached', ({ limit }) => console.log('tope diario', limit))
+```
+
+Pon `messagesPerMinute: 0` y `perRecipientCooldownMs: 0` si necesitas envíos sin ritmo (no recomendado para números nuevos). `status.sending` expone `dailyCount` e `inFlight`.
+
+Otras medidas ya activas: backoff con jitter en reconexiones, dedupe por id en la cola, guardado de credenciales serializado y sin borrado de sesión tras un logout.
 
 ## Estado de la sesión
 
@@ -210,7 +237,7 @@ El adaptador debe traducir los eventos de su transporte a `open`, `close`, `qr`,
 - Respuestas de botón de `buttonsResponseMessage` y `templateButtonReplyMessage` se normalizan en `buttonId`/`buttonText`.
 - Validación de botones (1-3, id/label obligatorios, 20 caracteres máximos) antes de tocar el transporte.
 - `messageTimestamp` de Baileys (segundos o `Long`) se normaliza a ms; el heartbeat ya no cierra el socket con `stale` falso.
-- TypeScript actualizado a 7.x y build/tests verificados (23/23).
+- TypeScript actualizado a 7.x y build/tests verificados (28/28).
 
 ## Limitaciones
 
