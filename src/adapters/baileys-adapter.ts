@@ -29,6 +29,7 @@ import type {
   LiveSocket,
   LoggerLike,
   MessageKey,
+  MessageRetryOptions,
   MessageStore,
   RawInteractiveOptions,
   TemplateButtonsContent,
@@ -112,6 +113,25 @@ async function loadBaileysModule(logger?: LoggerLike): Promise<BaileysModule> {
 }
 
 /**
+ * Defaults de reintento más conservadores que los de Baileys. Los valores
+ * agresivos (250 ms, 5 reintentos, recreación automática de sesión) disparan
+ * ráfagas de `retryReceipt` y bucles de `Bad MAC` en cuentas con mucho tráfico.
+ */
+export function resolveBaileysRetryOptions(retry: MessageRetryOptions = {}): {
+  retryRequestDelayMs: number
+  maxMsgRetryCount: number
+  enableAutoSessionRecreation: boolean
+  enableRecentMessageCache: boolean
+} {
+  return {
+    retryRequestDelayMs: Math.max(0, retry.retryRequestDelayMs ?? 1000),
+    maxMsgRetryCount: Math.max(1, Math.floor(retry.maxMsgRetryCount ?? 3)),
+    enableAutoSessionRecreation: retry.enableAutoSessionRecreation ?? false,
+    enableRecentMessageCache: retry.enableRecentMessageCache ?? true,
+  }
+}
+
+/**
  * Adaptador de transporte sobre Baileys. Toda la lógica de reconexión, cola y
  * salud vive en el cliente; aquí solo se traducen eventos y se llama al socket.
  */
@@ -135,16 +155,13 @@ export class BaileysAdapter implements SocketAdapter {
     const mod = await loadBaileysModule(options.logger)
     const auth = options.auth.snapshot as Record<string, unknown> | undefined
 
-    const retry = options.retry ?? {}
+    const retry = resolveBaileysRetryOptions(options.retry)
     const messageStore = options.messageStore
     const socket = mod.makeWASocket({
       auth,
       printQRInTerminal: false,
       browser: mod.Browsers.ubuntu(options.appName ?? 'Sora Baileys'),
-      retryRequestDelayMs: retry.retryRequestDelayMs ?? 250,
-      maxMsgRetryCount: retry.maxMsgRetryCount ?? 5,
-      enableAutoSessionRecreation: retry.enableAutoSessionRecreation ?? true,
-      enableRecentMessageCache: retry.enableRecentMessageCache ?? true,
+      ...retry,
       msgRetryCounterCache: options.retryCache ?? createRetryCache(),
       // Baileys invoca este callback cuando el móvil pide reenviar un mensaje
       // que no pudo descifrar. Sin él aparece el placeholder en el chat.

@@ -72,11 +72,11 @@ export interface RetryCache {
 
 /** Ajustes para reintentar el descifrado y el reenvío de mensajes. */
 export interface MessageRetryOptions {
-  /** Retardo entre reintentos de descifrado en ms. Por defecto 250. */
+  /** Retardo entre reintentos de descifrado en ms. Por defecto 1000. */
   retryRequestDelayMs?: number
-  /** Máximo de reintentos por mensaje. Por defecto 5. */
+  /** Máximo de reintentos por mensaje. Por defecto 3. */
   maxMsgRetryCount?: number
-  /** Recrear la sesión de cifrado cuando falla. Por defecto true. */
+  /** Recrear la sesión de cifrado cuando falla. Por defecto false para evitar bucles de Bad MAC. */
   enableAutoSessionRecreation?: boolean
   /** Cachear mensajes recientes para responder reenvíos. Por defecto true. */
   enableRecentMessageCache?: boolean
@@ -88,6 +88,12 @@ export interface MessageRetryOptions {
   messageStore?: MessageStore
   /** Caché propia de contadores de reintento. */
   retryCache?: RetryCache
+  /** Máximo de reenvíos automáticos por placeholder. Por defecto 2. */
+  maxResendRequests?: number
+  /** Tiempo mínimo entre reenvíos del mismo placeholder en ms. Por defecto 30000. */
+  resendCooldownMs?: number
+  /** Ventana para contar reenvíos de un mismo placeholder en ms. Por defecto 5 minutos. */
+  resendWindowMs?: number
 }
 
 /** Política de envío: velocidad, ritmo anti-ban y señales humanas. */
@@ -285,8 +291,8 @@ export interface ClientEvents {
   qr: { raw: string }
   pairingCode: { code: string }
   message: NormalizedMessage
-  /** Mensaje indescifrable; el cliente ya solicitó su reenvío al teléfono. */
-  messageUnavailable: NormalizedMessage
+  /** Mensaje indescifrable; `resendRequested` indica si se solicitó el reenvío. */
+  messageUnavailable: NormalizedMessage & { resendRequested?: boolean }
   button: ButtonReply
   sent: { id: string; to: string; kind?: OutboundKind }
   queued: { id: string; size: number }

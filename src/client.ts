@@ -72,6 +72,8 @@ export class BaileysClient {
   private readonly messageStore: MessageStore
   private readonly retryCache: RetryCache
   private readonly limiter: SendLimiter
+  private readonly resendPolicy: { max: number; cooldownMs: number; windowMs: number }
+  private readonly resendAttempts = new Map<string, { count: number; firstAt: number; lastAt: number }>()
   private dailyCount = 0
   private dailyKey = ''
   private readonly stats: ClientStats = {
@@ -112,6 +114,11 @@ export class BaileysClient {
     }, this.logger)
     this.retryCache = options.retry?.retryCache ?? createRetryCache()
     this.limiter = new SendLimiter(this.opts.sending, this.logger)
+    this.resendPolicy = {
+      max: Math.max(1, Math.floor(options.retry?.maxResendRequests ?? 2)),
+      cooldownMs: Math.max(0, options.retry?.resendCooldownMs ?? 30_000),
+      windowMs: Math.max(1000, options.retry?.resendWindowMs ?? 5 * 60_000),
+    }
 
     this.queue = new RetryQueue<OutboundMessage>({
       concurrency: this.opts.sending.maxConcurrent,
@@ -164,6 +171,38 @@ export class BaileysClient {
       this.events.emit('error', { where: 'requestMessageResend', error })
       return false
     }
+  }
+
+  /**
+   * Decide si un placeholder merece otro reenvío. Los mensajes duplicados
+   * (`Key used already or never filled`) se ignoran: pedirlos otra vez solo
+   * añade tráfico y puede repetir el error de descifrado.
+   */
+  private shouldRequestResend(message: NormalizedMessage): boolean {
+    const reason = message.unavailableReason ?? ''
+    if (/key\s+used\s+already|never\s+filled/i.test(reason)) return false
+
+    const key = `${message.from}:${message.id}`
+    const now = Date.now()
+    const entry = this.resendAttempts.get(key)
+
+    if (!entry || now - entry.firstAt > this.resendPolicy.windowMs) {
+      this.rememberResend(key, { count: 1, firstAt: now, lastAt: now })
+      return true
+    }
+    if (entry.count >= this.resendPolicy.max) return false
+    if (now - entry.lastAt < this.resendPolicy.cooldownMs) return false
+
+    entry.count += 1
+    entry.lastAt = now
+    return true
+  }
+
+  private rememberResend(key: string, value: { count: number; firstAt: number; lastAt: number }): void {
+    this.resendAttempts.set(key, value)
+    if (this.resendAttempts.size <= 1000) return
+    const oldest = this.resendAttempts.keys().next().value
+    if (oldest !== undefined) this.resendAttempts.delete(oldest)
   }
 
   on<K extends keyof ClientEvents>(event: K, listener: (payload: ClientEvents[K]) => void): () => void {
@@ -745,13 +784,18 @@ export class BaileysClient {
         this.lastActivityAt = toMillis(message.timestamp)
         if (message.unavailable) {
           // Placeholder de WhatsApp: no lo tratamos como texto ni disparamos botones.
-          // Pedimos el contenido real al teléfono y avisamos por un evento aparte.
-          this.logger.debug('message unavailable, requesting resend', {
+          // Pedimos el contenido real al teléfono, pero con límite y pausa para no
+          // convertir un mensaje indescifrable en un bucle de reenvíos.
+          const resendRequested = this.shouldRequestResend(message)
+          this.logger.debug('message unavailable', {
             id: message.id,
             reason: message.unavailableReason,
+            resendRequested,
           })
-          this.events.emit('messageUnavailable', message)
-          void this.requestResend({ id: message.id, remoteJid: message.from }, message.raw)
+          this.events.emit('messageUnavailable', { ...message, resendRequested })
+          if (resendRequested) {
+            void this.requestResend({ id: message.id, remoteJid: message.from }, message.raw)
+          }
           break
         }
         this.events.emit('message', message)
@@ -942,6 +986,7 @@ export class BaileysClient {
     this.stats.connectedAt = null
     this.stats.lastError = undefined
     this.lastActivityAt = 0
+    this.resendAttempts.clear()
     this.clearAllTimers()
   }
 

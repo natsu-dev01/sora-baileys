@@ -199,11 +199,13 @@ El cliente guarda los mensajes salientes y se los pasa a Baileys mediante `getMe
 ```js
 const client = new BaileysClient({
   retry: {
-    retryRequestDelayMs: 250,
-    maxMsgRetryCount: 5,
-    enableAutoSessionRecreation: true,
+    retryRequestDelayMs: 1000,
+    maxMsgRetryCount: 3,
+    enableAutoSessionRecreation: false,
     messageTtlMs: 3_600_000,
     maxRememberedMessages: 1000,
+    maxResendRequests: 2,
+    resendCooldownMs: 30_000,
   },
 })
 
@@ -212,7 +214,7 @@ client.on('messageUnavailable', async (msg) => {
 })
 ```
 
-Los placeholders no se emiten como `message`. El evento `messageUnavailable` ya dispara un reenvío automáticamente; llama a `requestResend()` solo si quieres forzar otro intento.
+Los placeholders no se emiten como `message`. El evento `messageUnavailable` ya dispara un reenvío automático limitado (2 por mensaje, con pausa de 30 s y ventana de 5 min) y los mensajes duplicados con `Key used already or never filled` se ignoran. Llama a `requestResend()` solo si quieres forzar otro intento.
 
 ## Velocidad y anti-ban
 

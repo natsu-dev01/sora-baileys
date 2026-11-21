@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { BaileysClient, MockAdapter, createMessageStore, toMillis } from '../dist/index.js'
+import { BaileysClient, MockAdapter, createMessageStore, resolveBaileysRetryOptions, toMillis } from '../dist/index.js'
 import { normalizeMessage } from '../dist/adapters/baileys-adapter.js'
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -283,6 +283,57 @@ test('pide reenvío de placeholders y no los emite como mensajes normales', asyn
   assert.equal(normalMessages, 1)
 
   await client.stop()
+})
+
+test('limita los reenvíos de placeholders e ignora mensajes duplicados', async () => {
+  const adapter = new MockAdapter({ connectDelayMs: 5, qrOnFresh: false })
+  adapter.markLinked()
+  const client = new BaileysClient({
+    ...fastOptions,
+    adapter,
+    sessionDir: 'linked-resend-throttle-test',
+    retry: { maxResendRequests: 1, resendCooldownMs: 60_000, resendWindowMs: 120_000 },
+  })
+
+  const connected = client.waitForEvent('connected')
+  await client.start()
+  await connected
+
+  adapter.pushUnavailableMessage({
+    id: 'duplicado',
+    reason: 'Key used already or never filled',
+  })
+  adapter.pushUnavailableMessage({ id: 'limitado', reason: 'Message absent from node' })
+  await delay(20)
+
+  assert.equal(adapter.resendRequests.length, 1)
+  assert.equal(adapter.resendRequests[0].key.id, 'limitado')
+
+  adapter.pushUnavailableMessage({ id: 'limitado', reason: 'Message absent from node' })
+  await delay(20)
+  assert.equal(adapter.resendRequests.length, 1)
+
+  await client.stop()
+})
+
+test('usa defaults conservadores de reintento para Baileys', () => {
+  assert.deepEqual(resolveBaileysRetryOptions(), {
+    retryRequestDelayMs: 1000,
+    maxMsgRetryCount: 3,
+    enableAutoSessionRecreation: false,
+    enableRecentMessageCache: true,
+  })
+  assert.deepEqual(resolveBaileysRetryOptions({
+    retryRequestDelayMs: 50,
+    maxMsgRetryCount: 9,
+    enableAutoSessionRecreation: true,
+    enableRecentMessageCache: false,
+  }), {
+    retryRequestDelayMs: 50,
+    maxMsgRetryCount: 9,
+    enableAutoSessionRecreation: true,
+    enableRecentMessageCache: false,
+  })
 })
 
 test('expone el store de mensajes y reenvía la configuración de reintentos', async () => {
