@@ -14,6 +14,10 @@
       "types": "./dist/adapters/baileys-adapter.d.ts",
       "import": "./dist/adapters/baileys-adapter.js"
     },
+    "./upstream": {
+      "types": "./dist/upstream.d.ts",
+      "import": "./dist/upstream.js"
+    },
     "./mock": {
       "types": "./dist/adapters/mock-adapter.d.ts",
       "import": "./dist/adapters/mock-adapter.js"

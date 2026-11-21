@@ -34,6 +34,14 @@ El paquete se instala como `@sora/baileys`, así que los imports no cambian:
 import { BaileysClient } from '@sora/baileys'
 ```
 
+Si además necesitas las primitivas del transporte, están re-exportadas en un subpath:
+
+```js
+import makeWASocket, { proto, Browsers, DisconnectReason } from '@sora/baileys/upstream'
+```
+
+`upstream` requiere que `@whiskeysockets/baileys` esté instalado en tu proyecto; el entry principal no.
+
 También puedes fijar un commit concreto:
 
 ```bash
