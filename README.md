@@ -39,14 +39,6 @@ También puedes fijar un commit concreto:
 npm install github:natsu-dev01/sora-baileys#06858d7
 ```
 
-Si prefieres clonar el repo para desarrollar:
-
-```bash
-git clone https://github.com/natsu-dev01/sora-baileys.git
-cd sora-baileys
-npm install
-```
-
 ## Inicio rápido (con transporte real)
 
 ```js
