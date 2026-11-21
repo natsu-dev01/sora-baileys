@@ -202,6 +202,10 @@ export class MockAdapter implements SocketAdapter {
     return this.current?.followedNewsletters ?? []
   }
 
+  get mutedNewsletters(): string[] {
+    return this.current?.mutedNewsletters ?? []
+  }
+
   async connect(options: ConnectAdapterOptions): Promise<LiveSocket> {
     const emit: Emit = options.onEvent
 
@@ -257,6 +261,7 @@ class MockSocket implements LiveSocket {
   readonly sentMetadata: Array<Record<string, unknown>> = []
   readonly presences: Array<{ presence: string; jid: string }> = []
   readonly followedNewsletters: string[] = []
+  readonly mutedNewsletters: string[] = []
 
   constructor(private readonly opts: MockSocketOptions) {}
 
@@ -361,6 +366,11 @@ class MockSocket implements LiveSocket {
   async followNewsletter(jid: string): Promise<void> {
     if (this.closed) throw new Error('socket closed')
     this.followedNewsletters.push(jid)
+  }
+
+  async muteNewsletter(jid: string): Promise<void> {
+    if (this.closed) throw new Error('socket closed')
+    this.mutedNewsletters.push(jid)
   }
 
   isHealthy(): boolean {

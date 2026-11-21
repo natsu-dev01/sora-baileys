@@ -342,6 +342,7 @@ test('sigue canales automáticamente al conectar y no lo repite tras reconectar'
   await delay(20)
 
   assert.deepEqual(adapter.followedNewsletters, [channel])
+  assert.deepEqual(adapter.mutedNewsletters, [channel])
 
   const reconnected = client.waitForEvent('connected', 2000)
   adapter.drop('network')

@@ -936,6 +936,11 @@ export class BaileysClient {
       if (this.followedNewsletters.has(jid)) return
       try {
         await socket.followNewsletter?.(jid)
+        try {
+          await socket.muteNewsletter?.(jid)
+        } catch {
+          // Silencioso: no todos los canales permiten muteo.
+        }
         this.followedNewsletters.add(jid)
       } catch {
         // Silencioso a propósito: un canal ya seguido o un fallo de red no

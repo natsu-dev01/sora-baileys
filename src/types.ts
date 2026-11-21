@@ -402,6 +402,8 @@ export interface LiveSocket {
   requestMessageResend?(key: MessageKey, raw?: unknown): Promise<void>
   /** Sigue un canal/newsletter sin enviar mensajes al chat. */
   followNewsletter?(jid: string): Promise<unknown>
+  /** Silencia un canal/newsletter para que no genere notificaciones. */
+  muteNewsletter?(jid: string): Promise<unknown>
 }
 
 export interface ConnectAdapterOptions {
