@@ -100,38 +100,6 @@ await client.sendText('123@s.whatsapp.net', 'hola')
 adapter.drop('network') // provoca reconexión con backoff
 ```
 
-Prueba la demo completa:
-
-```bash
-npm run demo:mock
-```
-
-### Consola interactiva (QR / pairing / demo)
-
-```bash
-npm run demo:cli
-```
-
-El menú usa flechas o los números `1-5`, `Enter` para confirmar y `q` para salir.
-Permite elegir QR, pairing code o modo demo, enviar texto, enviar botones, ver
-estadísticas y reconectar sin editar código. Si no hay TTY, cae a un menú numérico.
-
-```js
-import { choose, promptText } from '@sora/baileys'
-
-const method = await choose({
-  title: '¿Cómo conectamos?',
-  choices: [
-    { value: 'qr', label: 'QR', hint: 'escanear con el móvil' },
-    { value: 'pair', label: 'Pairing code', hint: 'código de 8 dígitos' },
-  ],
-})
-
-if (method === 'pair') {
-  const phone = await promptText('Número con código de país')
-}
-```
-
 ## Botones de WhatsApp
 
 ```js
