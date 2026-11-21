@@ -217,35 +217,6 @@ interface SocketAdapter {
 
 El adaptador debe traducir los eventos de su transporte a `open`, `close`, `qr`, `pairingCode`, `message`, `restartRequested`, `credsUpdated` y `error`. Toda la política de resiliencia queda en el cliente.
 
-## Estructura
-
-```
-src/
-  client.ts                 máquina de estados y orquestación
-  cli/menu.ts               selector interactivo y prompt de texto
-  adapters/
-    baileys-adapter.ts      traducción a @whiskeysockets/baileys (peer opcional)
-    mock-adapter.ts         transporte en memoria para tests/demos
-  core/
-    backoff.ts              exponencial con jitter
-    emitter.ts              eventos tipados
-    logger.ts               logger sin dependencias
-    queue.ts                cola con TTL y reintentos
-  store/file-store.ts       JSON atómico + recuperación de corrupción
-  types.ts                  contratos públicos
-```
-
-## Scripts
-
-```bash
-npm run build       # compila a dist/
-npm run typecheck   # solo chequeo de tipos
-npm test            # build + tests (node:test)
-npm run demo:mock   # demo sin WhatsApp
-npm run demo:cli    # menú interactivo QR / pairing / demo
-npm run demo:real   # bot real (requiere el peer)
-```
-
 ## Correcciones incluidas en esta pasada
 
 - Race condición real: si el adaptador emitía `open` antes de devolver el socket, la cola no se vaciaba. Ahora se fuerza un segundo flush al asignar el socket.
