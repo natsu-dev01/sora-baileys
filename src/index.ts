@@ -12,6 +12,7 @@ export { Emitter } from './core/emitter.js'
 export type { Listener } from './core/emitter.js'
 export { createLogger, noopLogger } from './core/logger.js'
 export type { LogLevel, LoggerOptions } from './core/logger.js'
+export { silenceDecryptLogs, getSuppressedDecryptErrorCount } from './core/decrypt-logs.js'
 /** Módulo interactivo avanzado (native flow, listas, carruseles y flows). */
 export * as interactive from './core/interactive.js'
 export {

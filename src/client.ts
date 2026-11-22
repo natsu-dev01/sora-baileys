@@ -1,6 +1,7 @@
 import { BaileysAdapter } from './adapters/baileys-adapter.js'
 import { backoffDelay } from './core/backoff.js'
 import { normalizeButtons as normalizeAdvancedButtons } from './core/interactive.js'
+import { silenceDecryptLogs } from './core/decrypt-logs.js'
 import { Emitter } from './core/emitter.js'
 import { createLogger } from './core/logger.js'
 import { toMillis } from './core/time.js'
@@ -97,6 +98,7 @@ export class BaileysClient {
   private heartbeatTimer: NodeJS.Timeout | undefined
   private credsTimer: NodeJS.Timeout | undefined
   private credsChain: Promise<void> = Promise.resolve()
+  private releaseDecryptLogSilencer?: () => void
   private lastActivityAt = 0
   private stopped = false
   private starting: Promise<void> | undefined
@@ -229,6 +231,9 @@ export class BaileysClient {
 
     this.stopped = false
     this.stats.startedAt ??= Date.now()
+    if (this.opts.retry.suppressDecryptErrors !== false) {
+      this.releaseDecryptLogSilencer ??= silenceDecryptLogs()
+    }
     this.setState('starting')
     this.starting = (async () => {
       try {
@@ -981,6 +986,9 @@ export class BaileysClient {
   }
 
   private async stopInternal(): Promise<void> {
+    this.releaseDecryptLogSilencer?.()
+    this.releaseDecryptLogSilencer = undefined
+
     if (this.state === 'stopped' || this.state === 'idle') {
       this.stopped = true
       this.clearAllTimers()

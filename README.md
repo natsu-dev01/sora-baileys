@@ -203,6 +203,7 @@ const client = new BaileysClient({
     retryRequestDelayMs: 1000,
     maxMsgRetryCount: 3,
     enableAutoSessionRecreation: false,
+    suppressDecryptErrors: true,
     messageTtlMs: 3_600_000,
     maxRememberedMessages: 1000,
     maxResendRequests: 2,
@@ -216,6 +217,8 @@ client.on('messageUnavailable', async (msg) => {
 ```
 
 Los placeholders no se emiten como `message`. El evento `messageUnavailable` ya dispara un reenvío automático limitado (2 por mensaje, con pausa de 30 s y ventana de 5 min) y los mensajes duplicados con `Key used already or never filled` se ignoran. Llama a `requestResend()` solo si quieres forzar otro intento.
+
+`suppressDecryptErrors: true` (por defecto) oculta únicamente los `console.error` que libsignal escribe al fallar el descifrado (`Failed to decrypt message with any known session...` y `Session error: ... Bad MAC ...`); el resto de errores de la app siguen viéndose. Ponlo en `false` para verlos. Puedes consultar cuántos se silenciaron con `getSuppressedDecryptErrorCount()` o instalar el filtro manualmente con `silenceDecryptLogs()` (devuelve una función para liberarlo).
 
 ## Velocidad y anti-ban
 

@@ -80,6 +80,8 @@ export interface MessageRetryOptions {
   enableAutoSessionRecreation?: boolean
   /** Cachear mensajes recientes para responder reenvíos. Por defecto true. */
   enableRecentMessageCache?: boolean
+  /** Silenciar los `console.error` de libsignal al fallar el descifrado. Por defecto true. */
+  suppressDecryptErrors?: boolean
   /** Tiempo de vida de los mensajes recordados en ms. Por defecto 1 hora. */
   messageTtlMs?: number
   /** Máximo de mensajes recordados. Por defecto 1000. */
