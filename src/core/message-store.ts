@@ -1,3 +1,4 @@
+import { environment, resolveEnvironmentTuning } from './environment.js'
 import type { LoggerLike, MessageKey, MessageStore, RetryCache } from '../types.js'
 
 interface StoredMessage {
@@ -22,11 +23,18 @@ export function createMessageStore(
   options: MessageStoreOptions = {},
   logger?: LoggerLike,
 ): MessageStore {
-  const ttlMs = Math.max(1000, options.ttlMs ?? 60 * 60 * 1000)
-  const maxMessages = Math.max(1, Math.floor(options.maxMessages ?? 1000))
+  const tuning = resolveEnvironmentTuning(environment.name)
+  const ttlMs = Math.max(1000, options.ttlMs ?? tuning.messageTtlMs)
+  const maxMessages = Math.max(1, Math.floor(options.maxMessages ?? tuning.maxRememberedMessages))
   const entries = new Map<string, StoredMessage>()
 
-  const prune = (): void => {
+  /**
+   * Recorrer todas las entradas en cada `remember` era O(n) por mensaje.
+   * En la ruta caliente solo se limpia al superar el límite; `size` (poco
+   * frecuente) sí fuerza una limpieza completa para seguir siendo exacto.
+   */
+  const prune = (force = false): void => {
+    if (!force && entries.size <= maxMessages) return
     const now = Date.now()
     for (const [id, entry] of entries) {
       if (entry.expiresAt <= now) entries.delete(id)
@@ -40,7 +48,7 @@ export function createMessageStore(
 
   return {
     get size(): number {
-      prune()
+      prune(true)
       return entries.size
     },
 
@@ -86,7 +94,7 @@ export function createMessageStore(
 }
 
 /** Caché mínima compatible con `CacheStore` de Baileys para contadores de reintento. */
-export function createRetryCache(maxEntries = 5000): RetryCache {
+export function createRetryCache(maxEntries = resolveEnvironmentTuning(environment.name).retryCacheMaxEntries): RetryCache {
   const entries = new Map<string, unknown>()
 
   return {

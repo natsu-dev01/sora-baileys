@@ -8,6 +8,7 @@ import type { LoggerLike } from '../types.js'
  */
 export class JsonFileStore<T extends object> {
   private writeChain: Promise<void> = Promise.resolve()
+  private ensuredDir?: string
 
   constructor(
     readonly filePath: string,
@@ -50,7 +51,11 @@ export class JsonFileStore<T extends object> {
   }
 
   private async writeNow(data: T): Promise<void> {
-    await mkdir(path.dirname(this.filePath), { recursive: true })
+    const dir = path.dirname(this.filePath)
+    if (this.ensuredDir !== dir) {
+      await mkdir(dir, { recursive: true })
+      this.ensuredDir = dir
+    }
     const temp = `${this.filePath}.${process.pid}.${Date.now().toString(36)}.tmp`
     const serialized = JSON.stringify(data, null, 2)
     await writeFile(temp, serialized, { encoding: 'utf8', mode: 0o600 })

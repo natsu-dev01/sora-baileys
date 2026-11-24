@@ -1,3 +1,4 @@
+import { environment, resolveEnvironmentTuning } from './environment.js'
 import type { LoggerLike, QueueOptions } from '../types.js'
 
 export interface QueueItem<T> {
@@ -33,6 +34,8 @@ function nextId(): string {
  */
 export class RetryQueue<T> {
   private readonly items: QueueItem<T>[] = []
+  /** Índice por id: la deduplicación y el borrado dejan de ser O(n). */
+  private readonly byId = new Map<string, QueueItem<T>>()
   private readonly maxSize: number
   private readonly ttlMs: number
   private readonly maxAttempts: number
@@ -43,9 +46,10 @@ export class RetryQueue<T> {
   private flushing = false
 
   constructor(config: QueueConfig<T>) {
-    this.maxSize = Math.max(1, config.maxSize ?? 1000)
-    this.ttlMs = Math.max(1, config.ttlMs ?? 5 * 60_000)
-    this.maxAttempts = Math.max(1, config.maxAttempts ?? 5)
+    const tuning = resolveEnvironmentTuning(environment.name).queue
+    this.maxSize = Math.max(1, config.maxSize ?? tuning.maxSize ?? 1000)
+    this.ttlMs = Math.max(1, config.ttlMs ?? tuning.ttlMs ?? 5 * 60_000)
+    this.maxAttempts = Math.max(1, config.maxAttempts ?? tuning.maxAttempts ?? 5)
     this.concurrency = Math.max(1, Math.floor(config.concurrency ?? 1))
     this.now = config.now ?? (() => Date.now())
     this.onSend = config.onSend
@@ -58,7 +62,7 @@ export class RetryQueue<T> {
 
   enqueue(payload: T, id?: string): string {
     const key = id ?? nextId()
-    const existing = this.items.find((item) => item.id === key)
+    const existing = this.byId.get(key)
     if (existing) {
       existing.payload = payload
       existing.expiresAt = this.now() + this.ttlMs
@@ -66,16 +70,19 @@ export class RetryQueue<T> {
     }
     if (this.items.length >= this.maxSize) {
       const removed = this.items.shift()
+      if (removed) this.byId.delete(removed.id)
       this.logger?.warn('queue full, dropping oldest message', { id: removed?.id })
     }
     const at = this.now()
-    this.items.push({
+    const item: QueueItem<T> = {
       id: key,
       payload,
       attempts: 0,
       createdAt: at,
       expiresAt: at + this.ttlMs,
-    })
+    }
+    this.items.push(item)
+    this.byId.set(key, item)
     return key
   }
 
@@ -90,7 +97,8 @@ export class RetryQueue<T> {
         for (;;) {
           const item = snapshot[cursor++]
           if (!item) return
-          if (!this.items.includes(item)) continue
+          // Puede haberse reemplazado por otro item con el mismo id mientras se vaciaba.
+          if (this.byId.get(item.id) !== item) continue
 
           const at = this.now()
           if (item.expiresAt <= at) {
@@ -130,9 +138,12 @@ export class RetryQueue<T> {
 
   clear(): void {
     this.items.length = 0
+    this.byId.clear()
   }
 
   private remove(item: QueueItem<T>): void {
+    if (this.byId.get(item.id) !== item) return
+    this.byId.delete(item.id)
     const index = this.items.indexOf(item)
     if (index >= 0) this.items.splice(index, 1)
   }

@@ -1,3 +1,4 @@
+import { environment, resolveEnvironmentTuning } from './environment.js'
 import type { LoggerLike, SendingOptions } from '../types.js'
 
 export interface ResolvedSending {
@@ -13,13 +14,14 @@ export interface ResolvedSending {
 }
 
 export function resolveSending(options: SendingOptions = {}): ResolvedSending {
+  const defaults = resolveEnvironmentTuning(environment.name).sending
   return {
-    maxConcurrent: Math.max(1, Math.floor(options.maxConcurrent ?? 3)),
-    messagesPerMinute: Math.max(0, options.messagesPerMinute ?? 60),
-    burst: Math.max(1, Math.floor(options.burst ?? 5)),
-    perRecipientCooldownMs: Math.max(0, options.perRecipientCooldownMs ?? 800),
-    jitterMs: Math.max(0, options.jitterMs ?? 400),
-    sendTimeoutMs: Math.max(0, options.sendTimeoutMs ?? 15_000),
+    maxConcurrent: Math.max(1, Math.floor(options.maxConcurrent ?? defaults.maxConcurrent ?? 3)),
+    messagesPerMinute: Math.max(0, options.messagesPerMinute ?? defaults.messagesPerMinute ?? 60),
+    burst: Math.max(1, Math.floor(options.burst ?? defaults.burst ?? 5)),
+    perRecipientCooldownMs: Math.max(0, options.perRecipientCooldownMs ?? defaults.perRecipientCooldownMs ?? 800),
+    jitterMs: Math.max(0, options.jitterMs ?? defaults.jitterMs ?? 400),
+    sendTimeoutMs: Math.max(0, options.sendTimeoutMs ?? defaults.sendTimeoutMs ?? 15_000),
     dailyLimit: Math.max(0, Math.floor(options.dailyLimit ?? 0)),
     typing: options.typing ?? false,
     typingMs: Math.max(100, options.typingMs ?? 1200),

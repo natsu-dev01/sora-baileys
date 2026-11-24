@@ -220,6 +220,35 @@ Los placeholders no se emiten como `message`. El evento `messageUnavailable` ya 
 
 `suppressDecryptErrors: true` (por defecto) oculta únicamente los `console.error` que libsignal escribe al fallar el descifrado (`Failed to decrypt message with any known session...` y `Session error: ... Bad MAC ...`); el resto de errores de la app siguen viéndose. Ponlo en `false` para verlos. Puedes consultar cuántos se silenciaron con `getSuppressedDecryptErrorCount()` o instalar el filtro manualmente con `silenceDecryptLogs()` (devuelve una función para liberarlo).
 
+## Termux y VPS
+
+El cliente detecta el entorno al arrancar y elige defaults más seguros sin que tengas que configurar nada:
+
+| Perfil | Cuándo | Mensajes recordados | Cola | Envíos paralelos | Heartbeat |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `lite` | Termux, `SORA_LOW_MEMORY=1` o RAM ≤ 2 GB | 200 | 300 | 1 | 60 s |
+| `vps` | Docker/container con más RAM | 500 | 600 | 2 | 45 s |
+| `full` | Equipo local con recursos | 1000 | 1000 | 3 | 30 s |
+
+Afecta a `retry`, `queue`, `sending` y al watchdog, tanto en `BaileysClient` como si usas `createMessageStore()`, `createRetryCache()`, `RetryQueue` o `resolveSending()` directamente. **Cualquier opción que pases tú gana siempre** sobre el default del perfil.
+
+```bash
+SORA_PROFILE=lite node bot.js          # fuerza el perfil reducido
+SORA_LOW_MEMORY=1 node bot.js          # lo detecta como lite
+```
+
+Puedes consultar el perfil con `environment`, `detectEnvironment()` y `describeEnvironment()`. El filtro de logs de descifrado (`suppressDecryptErrors`) viene activo en los tres perfiles.
+
+La librería **no** instala manejadores de `SIGINT`/`SIGTERM`: eso debe hacerlo la aplicación, llamando a `client.stop()` antes de salir.
+
+## Estabilidad y rendimiento
+
+- **Cola O(1)**: deduplicación y borrado por id mediante un índice, en vez de buscar linealmente en cada mensaje.
+- **Flush coalescido**: si llegan mensajes mientras se está vaciando la cola, se hace una segunda pasada inmediata (no hay que esperar otra reconexión).
+- **Heartbeat a prueba de carreras**: tras esperar `isHealthy()` se verifica que el socket siga siendo el mismo; un check lento ya no puede cerrar una conexión recién iniciada.
+- **Store con prune diferido**: solo se barre completo al superar el límite (o al consultar `size`), no en cada `remember()`.
+- **Escrituras sobre la misma carpeta**: `JsonFileStore` cachea el `mkdir` y agrupa escrituras de credenciales.
+
 ## Velocidad y anti-ban
 
 Por defecto los envíos van a 60 mensajes/minuto con ráfaga inicial de 5, hasta 3 destinatarios en paralelo, 800 ms de separación por chat + jitter y timeout de 15 s. Cada mensaje usa un id estable: si un envío se reintenta, WhatsApp lo deduce en vez de duplicarlo.

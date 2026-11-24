@@ -2,6 +2,7 @@ import { BaileysAdapter } from './adapters/baileys-adapter.js'
 import { backoffDelay } from './core/backoff.js'
 import { normalizeButtons as normalizeAdvancedButtons } from './core/interactive.js'
 import { silenceDecryptLogs } from './core/decrypt-logs.js'
+import { environment, resolveEnvironmentTuning } from './core/environment.js'
 import { Emitter } from './core/emitter.js'
 import { createLogger } from './core/logger.js'
 import { toMillis } from './core/time.js'
@@ -98,6 +99,8 @@ export class BaileysClient {
   private heartbeatTimer: NodeJS.Timeout | undefined
   private credsTimer: NodeJS.Timeout | undefined
   private credsChain: Promise<void> = Promise.resolve()
+  private flushingQueue = false
+  private flushAgain = false
   private releaseDecryptLogSilencer?: () => void
   private lastActivityAt = 0
   private stopped = false
@@ -112,16 +115,16 @@ export class BaileysClient {
       this.logger.error('event listener failed', { event, error })
     })
 
-    this.messageStore = options.retry?.messageStore ?? createMessageStore({
-      ttlMs: options.retry?.messageTtlMs,
-      maxMessages: options.retry?.maxRememberedMessages,
+    this.messageStore = this.opts.retry.messageStore ?? createMessageStore({
+      ttlMs: this.opts.retry.messageTtlMs,
+      maxMessages: this.opts.retry.maxRememberedMessages,
     }, this.logger)
-    this.retryCache = options.retry?.retryCache ?? createRetryCache()
+    this.retryCache = this.opts.retry.retryCache ?? createRetryCache()
     this.limiter = new SendLimiter(this.opts.sending, this.logger)
     this.resendPolicy = {
-      max: Math.max(1, Math.floor(options.retry?.maxResendRequests ?? 2)),
-      cooldownMs: Math.max(0, options.retry?.resendCooldownMs ?? 30_000),
-      windowMs: Math.max(1000, options.retry?.resendWindowMs ?? 5 * 60_000),
+      max: Math.max(1, Math.floor(this.opts.retry.maxResendRequests ?? 2)),
+      cooldownMs: Math.max(0, this.opts.retry.resendCooldownMs ?? 30_000),
+      windowMs: Math.max(1000, this.opts.retry.resendWindowMs ?? 5 * 60_000),
     }
 
     this.queue = new RetryQueue<OutboundMessage>({
@@ -913,15 +916,23 @@ export class BaileysClient {
 
   private async checkHealth(gen: number): Promise<void> {
     if (gen !== this.generation || this.state !== 'connected' || this.stopped) return
+    const socket = this.socket
+    if (!socket) return
 
     const stale = Date.now() - this.lastActivityAt > this.opts.staleAfterMs
     let healthy = true
     try {
-      const result = await this.socket?.isHealthy?.()
+      const result = await socket.isHealthy?.()
       if (result === false) healthy = false
     } catch (error) {
       healthy = false
       this.lastError(error)
+    }
+
+    // `isHealthy` puede tardar; mientras tanto el socket pudo cerrarse y
+    // reconectarse. No debemos matar la conexión nueva con un check viejo.
+    if (gen !== this.generation || this.state !== 'connected' || this.stopped || this.socket !== socket) {
+      return
     }
 
     if (!stale && healthy) return
@@ -956,9 +967,22 @@ export class BaileysClient {
 
   private async flushQueue(): Promise<void> {
     if (this.state !== 'connected' || !this.socket) return
-    const result = await this.queue.flush()
-    if (result.dropped > 0) this.stats.messagesDropped += result.dropped
-    if (result.sent + result.failed + result.dropped > 0) this.events.emit('flushed', result)
+    if (this.flushingQueue) {
+      // Entries added mid-flush no deben esperar al próximo evento `open`.
+      this.flushAgain = true
+      return
+    }
+    this.flushingQueue = true
+    try {
+      do {
+        this.flushAgain = false
+        const result = await this.queue.flush()
+        if (result.dropped > 0) this.stats.messagesDropped += result.dropped
+        if (result.sent + result.failed + result.dropped > 0) this.events.emit('flushed', result)
+      } while (this.flushAgain && this.state === 'connected' && this.socket)
+    } finally {
+      this.flushingQueue = false
+    }
   }
 
   private scheduleCredsSave(): void {
@@ -988,6 +1012,7 @@ export class BaileysClient {
   private async stopInternal(): Promise<void> {
     this.releaseDecryptLogSilencer?.()
     this.releaseDecryptLogSilencer = undefined
+    this.flushAgain = false
 
     if (this.state === 'stopped' || this.state === 'idle') {
       this.stopped = true
@@ -1017,6 +1042,7 @@ export class BaileysClient {
   private resetForStart(): void {
     this.auth = undefined
     this.socket = undefined
+    this.flushAgain = false
     this.attempt = 0
     this.generation += 1
     this.stats.connectedAt = null
@@ -1193,6 +1219,7 @@ function normalizeCardButtons(
 
 function resolveOptions(options: ClientOptions): ResolvedOptions {
   const phone = options.phoneNumber?.replace(/[^\d]/g, '')
+  const tuning = resolveEnvironmentTuning(environment.name)
   return {
     sessionDir: options.sessionDir ?? './sessions/default',
     appName: options.appName ?? 'Sora Baileys',
@@ -1200,14 +1227,14 @@ function resolveOptions(options: ClientOptions): ResolvedOptions {
     printQR: options.printQR ?? false,
     backoff: options.backoff ?? {},
     maxReconnectAttempts: options.maxReconnectAttempts ?? Infinity,
-    heartbeatEveryMs: Math.max(1000, options.heartbeatEveryMs ?? 30_000),
-    staleAfterMs: Math.max(2000, options.staleAfterMs ?? 120_000),
+    heartbeatEveryMs: Math.max(1000, options.heartbeatEveryMs ?? tuning.heartbeatEveryMs),
+    staleAfterMs: Math.max(2000, options.staleAfterMs ?? tuning.staleAfterMs),
     restartDelayMs: Math.max(0, options.restartDelayMs ?? 250),
     reconnectOnLoggedOut: options.reconnectOnLoggedOut ?? false,
     reconnectOnBanned: options.reconnectOnBanned ?? false,
-    queue: options.queue ?? {},
+    queue: { ...tuning.queue, ...options.queue },
     socketOptions: options.socketOptions ?? {},
-    retry: options.retry ?? {},
+    retry: { ...tuning.retry, ...options.retry },
     autoFollowNewsletters: (options.autoFollowNewsletters ?? [])
       .map((jid) => String(jid).trim())
       .filter((jid) => jid.length > 0),
