@@ -315,4 +315,4 @@ El adaptador debe traducir los eventos de su transporte a `open`, `close`, `qr`,
 
 ## Licencia
 
-MIT.
+MIT. Consulta el texto completo en [LICENSE](LICENSE).
